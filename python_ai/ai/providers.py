@@ -4,6 +4,10 @@ import os
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
+
+from memory.models import MemoryDecision
+
 
 load_dotenv()
 
@@ -14,9 +18,24 @@ class DemoProvider:
     def generate_response(self, user_text: str) -> str:
         return f'[DEMO AI] I received: "{user_text}"'
 
+    def decide_memory_action(
+        self,
+        user_text: str,
+    ) -> MemoryDecision:
+        """
+        Simple fallback for demo mode.
+        """
+
+        return MemoryDecision(
+            action="CHAT",
+            content="",
+            query="",
+            memory_type="general",
+        )
+
 
 class GeminiProvider:
-    """Gemini API provider for VEMORA V0.1."""
+    """Gemini API provider for VEMORA."""
 
     def __init__(self) -> None:
         api_key = os.getenv("GEMINI_API_KEY")
@@ -30,9 +49,67 @@ class GeminiProvider:
             api_key=api_key
         )
 
-        # We can change this later without changing the rest
-        # of the VEMORA architecture.
         self.model = "gemini-3.6-flash"
+
+    # ==========================================================
+    # MEMORY DECISION
+    # ==========================================================
+
+    def decide_memory_action(
+        self,
+        user_text: str,
+    ) -> MemoryDecision:
+
+        prompt = f"""
+You are the memory controller for VEMORA,
+an AI wearable assistant.
+
+Decide what VEMORA should do with the user's message.
+
+Possible actions:
+
+1. CHAT
+Use for normal questions, conversation, explanations,
+translations, calculations, and general requests.
+
+2. SAVE_MEMORY
+Use when the user wants VEMORA to remember useful
+personal information for later.
+
+3. SEARCH_MEMORY
+Use when the user asks about something VEMORA may
+have remembered previously.
+
+Rules:
+
+- Do not invent memories.
+- Do not save every ordinary conversation.
+- Save information that is useful and likely to matter later.
+- Preserve the meaning of the user's statement.
+- Keep saved content concise.
+- For SEARCH_MEMORY, create a useful search query.
+- For CHAT, leave content and query empty.
+
+User message:
+{user_text}
+"""
+
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=MemoryDecision,
+            ),
+        )
+
+        return MemoryDecision.model_validate_json(
+            response.text
+        )
+
+    # ==========================================================
+    # NORMAL RESPONSE
+    # ==========================================================
 
     def generate_response(
         self,
@@ -46,6 +123,10 @@ class GeminiProvider:
 
         return response.text
 
+
+# ==============================================================
+# PROVIDER FACTORY
+# ==============================================================
 
 def create_llm_provider():
     demo_mode = os.getenv(

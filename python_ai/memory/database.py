@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -8,16 +9,16 @@ class MemoryDatabase:
     """
     SQLite storage for VEMORA memories.
 
-    V0.1:
-        One local user.
+    V0.2:
+        Stores both memory text and its embedding.
 
     Later:
-        user_id will isolate memories for different users.
+        This can be replaced with PostgreSQL + pgvector.
     """
 
     def __init__(
         self,
-        db_path: str | Path = "data/vemora.db",
+        db_path: str | Path,
     ) -> None:
 
         self.db_path = Path(db_path)
@@ -31,9 +32,7 @@ class MemoryDatabase:
             self.db_path
         )
 
-        self.connection.row_factory = (
-            sqlite3.Row
-        )
+        self.connection.row_factory = sqlite3.Row
 
         self._create_tables()
 
@@ -50,6 +49,8 @@ class MemoryDatabase:
 
                 memory_type TEXT NOT NULL DEFAULT 'general',
 
+                embedding TEXT,
+
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -63,22 +64,29 @@ class MemoryDatabase:
         self,
         user_id: str,
         content: str,
-        memory_type: str = "general",
+        memory_type: str,
+        embedding: list[float],
     ) -> int:
+
+        embedding_json = json.dumps(
+            embedding
+        )
 
         cursor = self.connection.execute(
             """
             INSERT INTO memories (
                 user_id,
                 content,
-                memory_type
+                memory_type,
+                embedding
             )
-            VALUES (?, ?, ?)
+            VALUES (?, ?, ?, ?)
             """,
             (
                 user_id,
                 content,
                 memory_type,
+                embedding_json,
             ),
         )
 
@@ -86,68 +94,41 @@ class MemoryDatabase:
 
         return int(cursor.lastrowid)
 
-    def search_memories(
+    def get_memories_with_embeddings(
         self,
         user_id: str,
-        query: str,
-        limit: int = 5,
     ) -> list[dict]:
 
-        # Simple keyword search for V0.1.
-        #
-        # Later we will replace this with embeddings/vector search.
-
-        words = [
-            word.strip()
-            for word in query.lower().split()
-            if len(word.strip()) >= 3
-        ]
-
-        if not words:
-            return []
-
-        conditions = []
-        parameters: list[str | int] = [
-            user_id
-        ]
-
-        for word in words:
-            conditions.append(
-                "LOWER(content) LIKE ?"
-            )
-            parameters.append(
-                f"%{word}%"
-            )
-
-        where_clause = " OR ".join(
-            conditions
-        )
-
-        parameters.append(limit)
-
         cursor = self.connection.execute(
-            f"""
+            """
             SELECT
                 id,
                 content,
                 memory_type,
+                embedding,
                 created_at,
                 updated_at
             FROM memories
             WHERE user_id = ?
-              AND ({where_clause})
+              AND embedding IS NOT NULL
             ORDER BY updated_at DESC
-            LIMIT ?
             """,
-            parameters,
+            (user_id,),
         )
 
-        rows = cursor.fetchall()
+        results = []
 
-        return [
-            dict(row)
-            for row in rows
-        ]
+        for row in cursor.fetchall():
+
+            item = dict(row)
+
+            item["embedding"] = json.loads(
+                item["embedding"]
+            )
+
+            results.append(item)
+
+        return results
 
     def get_all_memories(
         self,
@@ -175,4 +156,5 @@ class MemoryDatabase:
         ]
 
     def close(self) -> None:
+
         self.connection.close()
