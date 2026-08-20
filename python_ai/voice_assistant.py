@@ -202,30 +202,24 @@ def main() -> None:
                         for result in results
                     )
 
-                    response = (
-                        llm.generate_response(
-                            f"""
-You are VEMORA, a concise personal AI assistant.
+                    response = llm.generate_response(
+                    f"""
+                Answer the user's question using ONLY the relevant memories below.
 
-Answer the user's question using ONLY the
-relevant memories provided below.
+                User question:
+                {user_text}
 
-User question:
-{user_text}
+                Relevant memories:
+                {memory_context}
 
-Relevant memories:
-{memory_context}
-
-Rules:
-- Do not invent information.
-- Do not mention the memory system.
-- Give a natural, concise answer.
-- If the memories are insufficient, say that
-  you don't have enough saved information.
-"""
-                        )
-                    )
-
+                Rules:
+                - Keep the answer short and natural.
+                - Normally use 1 to 3 sentences.
+                - Give only the information needed to answer.
+                - Do not mention the memory system.
+                - Do not invent information.
+                """
+                )
             # =================================================
             # 6. NORMAL CHAT
             # =================================================

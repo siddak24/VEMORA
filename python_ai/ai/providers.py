@@ -49,7 +49,7 @@ class GeminiProvider:
             api_key=api_key
         )
 
-        self.model = "gemini-3.6-flash"
+        self.model = "gemini-3.5-flash-lite"
 
     # ==========================================================
     # MEMORY DECISION
@@ -116,12 +116,32 @@ User message:
         user_text: str,
     ) -> str:
 
+        prompt = f"""
+    You are VEMORA, a smart wearable AI assistant.
+
+    Answer the user's request clearly and naturally.
+
+    Response rules:
+    - Keep the answer SHORT and concise.
+    - Normally use 1 to 3 sentences.
+    - Give the most important information first.
+    - Do not add unnecessary background or explanations.
+    - Do not repeat the user's question.
+    - For simple factual questions, answer in 1 sentence.
+    - Only give a long or detailed answer when the user explicitly asks
+    for an explanation, details, steps, or a longer response.
+    - The response will be spoken aloud, so make it natural for speech.
+
+    User:
+    {user_text}
+    """
+
         response = self.client.models.generate_content(
             model=self.model,
-            contents=user_text,
+            contents=prompt,
         )
 
-        return response.text
+        return response.text.strip()
 
 
 # ==============================================================
