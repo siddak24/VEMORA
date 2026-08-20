@@ -35,7 +35,34 @@ class MemoryDatabase:
         self.connection.row_factory = sqlite3.Row
 
         self._create_tables()
+        self._create_session_tables()
 
+    def create_session(
+        self,
+        user_id: str,
+        session_type: str = "conversation",
+    ) -> int:
+
+        cursor = self.connection.execute(
+            """
+            INSERT INTO sessions (
+                user_id,
+                session_type,
+                state
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                user_id,
+                session_type,
+                "ACTIVE",
+            ),
+        )
+
+        self.connection.commit()
+
+        return int(cursor.lastrowid)
+    
     def _create_tables(self) -> None:
 
         self.connection.execute(
@@ -56,6 +83,136 @@ class MemoryDatabase:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
+        )
+
+        self.connection.commit()
+
+    def update_session_state(
+        self,
+        session_id: int,
+        state: str,
+    ) -> None:
+
+        self.connection.execute(
+            """
+            UPDATE sessions
+            SET state = ?
+            WHERE id = ?
+            """,
+            (
+                state,
+                session_id,
+            ),
+        )
+
+        self.connection.commit()
+
+    def get_recent_session_chunks(
+        self,
+        session_id: int,
+        limit: int = 10,
+    ) -> list[dict]:
+
+        cursor = self.connection.execute(
+            """
+            SELECT
+                id,
+                session_id,
+                sequence,
+                text,
+                created_at
+            FROM transcript_chunks
+            WHERE session_id = ?
+            ORDER BY sequence DESC
+            LIMIT ?
+            """,
+            (
+                session_id,
+                limit,
+            ),
+        )
+
+        rows = cursor.fetchall()
+
+        rows.reverse()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+        
+    def get_session_chunks(
+        self,
+        session_id: int,
+    ) -> list[dict]:
+
+        cursor = self.connection.execute(
+            """
+            SELECT
+                id,
+                session_id,
+                sequence,
+                text,
+                created_at
+            FROM transcript_chunks
+            WHERE session_id = ?
+            ORDER BY sequence ASC
+            """,
+            (session_id,),
+        )
+
+        return [
+            dict(row)
+            for row in cursor.fetchall()
+        ]
+    
+    def add_transcript_chunk(
+        self,
+        session_id: int,
+        sequence: int,
+        text: str,
+    ) -> int:
+
+        cursor = self.connection.execute(
+            """
+            INSERT INTO transcript_chunks (
+                session_id,
+                sequence,
+                text
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                session_id,
+                sequence,
+                text,
+            ),
+        )
+
+        self.connection.commit()
+
+        return int(cursor.lastrowid)
+
+    def close_session(
+        self,
+        session_id: int,
+        summary: str | None = None,
+    ) -> None:
+
+        self.connection.execute(
+            """
+            UPDATE sessions
+            SET
+                state = ?,
+                ended_at = CURRENT_TIMESTAMP,
+                summary = ?
+            WHERE id = ?
+            """,
+            (
+                "FINALIZING",
+                summary,
+                session_id,
+            ),
         )
 
         self.connection.commit()
@@ -129,6 +286,48 @@ class MemoryDatabase:
             results.append(item)
 
         return results
+    def _create_session_tables(self) -> None:
+
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                user_id TEXT NOT NULL,
+
+                session_type TEXT NOT NULL DEFAULT 'conversation',
+
+                state TEXT NOT NULL DEFAULT 'IDLE',
+
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                ended_at TIMESTAMP,
+
+                summary TEXT
+            )
+            """
+        )
+
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transcript_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                session_id INTEGER NOT NULL,
+
+                sequence INTEGER NOT NULL,
+
+                text TEXT NOT NULL,
+
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                FOREIGN KEY (session_id)
+                    REFERENCES sessions(id)
+            )
+            """
+        )
+
+        self.connection.commit()
 
     def get_all_memories(
         self,

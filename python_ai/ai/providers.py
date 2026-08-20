@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-
+from session.decision import SessionDecision
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -54,6 +54,73 @@ class GeminiProvider:
     # ==========================================================
     # MEMORY DECISION
     # ==========================================================
+
+    def decide_session_action(
+        self,
+        user_text: str,
+        session_context: str = "",
+    ) -> SessionDecision:
+
+        prompt = f"""
+    You are VEMORA, a wearable AI assistant in ACTIVE LISTENING mode.
+
+    The user has intentionally asked VEMORA to listen to an ongoing
+    conversation, lecture, seminar, or real-world situation.
+
+    IMPORTANT:
+    VEMORA should normally remain SILENT.
+
+    Your job is to decide whether the current utterance requires
+    VEMORA to speak.
+
+    Possible actions:
+
+    1. LISTEN
+    The user is simply speaking or someone else is speaking.
+    Record the useful context, but do not respond.
+
+    2. RESPOND
+    The user is directly asking VEMORA something or explicitly
+    requesting a response.
+
+    3. SAVE_MEMORY
+    The utterance contains useful persistent personal information
+    that should be remembered.
+
+    4. SEARCH_MEMORY
+    The user is asking about information VEMORA may already remember.
+
+    Rules:
+    - Default to LISTEN.
+    - Do NOT speak merely because someone said something interesting.
+    - Do NOT answer every utterance.
+    - should_speak should normally be false.
+    - If the user explicitly addresses VEMORA or asks a question to it,
+    use RESPOND or SEARCH_MEMORY and set should_speak=true.
+    - For SAVE_MEMORY, should_speak should normally be false unless
+    the user explicitly asks for confirmation.
+    - Never invent information.
+    - Keep memory content concise.
+
+    Recent session context:
+    {session_context}
+
+    Current utterance:
+    {user_text}
+    """
+
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=SessionDecision,
+            ),
+        )
+
+        return SessionDecision.model_validate_json(
+            response.text
+        )
 
     def decide_memory_action(
         self,

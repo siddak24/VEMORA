@@ -7,24 +7,26 @@ from audio.local_stt import LocalSTT
 from audio.recorder import AudioRecorder
 from audio.tts import LocalTTS
 from memory.manager import MemoryManager
+from session.manager import SessionManager
+from memory.database import MemoryDatabase
 
 
 def main() -> None:
     print()
     print("========================================")
-    print("        VEMORA SEMANTIC MEMORY")
+    print("          VEMORA ASSISTANT")
     print("========================================")
+    print()
+    print("S = start session")
+    print("E = end session")
+    print("Q = quit")
     print()
 
     # ---------------------------------------------------------
-    # Audio
+    # Components
     # ---------------------------------------------------------
 
     recorder = AudioRecorder()
-
-    # ---------------------------------------------------------
-    # Local STT
-    # ---------------------------------------------------------
 
     model_path = (
         Path(__file__).resolve().parents[1]
@@ -38,226 +40,324 @@ def main() -> None:
         compute_type="int8",
     )
 
-    # ---------------------------------------------------------
-    # Gemini
-    # ---------------------------------------------------------
-
     llm = create_llm_provider()
-
-    # ---------------------------------------------------------
-    # TTS
-    # ---------------------------------------------------------
 
     tts = LocalTTS()
 
-    # ---------------------------------------------------------
-    # Semantic Memory
-    # ---------------------------------------------------------
+    database = MemoryDatabase(
+        db_path=(
+            Path(__file__).resolve().parents[1]
+            / "data"
+            / "vemora.db"
+        )
+    )
 
     memory = MemoryManager(
         user_id="default_user"
     )
 
-    print()
+    session = SessionManager(
+        database=database,
+        user_id="default_user",
+    )
+
     print("[VEMORA] All systems ready.")
     print()
+
+    # ---------------------------------------------------------
+    # Main loop
+    # ---------------------------------------------------------
 
     while True:
 
         try:
-            # =================================================
-            # 1. RECORD
-            # =================================================
 
-            audio_file = recorder.record_until_enter(
-                "data/voice_input.wav"
-            )
+            command = input(
+                "[VEMORA] Command: "
+            ).strip().lower()
 
             # =================================================
-            # 2. STT
+            # QUIT
             # =================================================
 
-            print()
-            print("[1] Transcribing...")
+            if command == "q":
 
-            user_text = stt.transcribe(
-                audio_file
-            )
-
-            if not user_text:
+                if session.session_id is not None:
+                    session.end()
 
                 print(
-                    "[VEMORA] No speech detected."
+                    "[VEMORA] Shutting down."
                 )
 
-                continue
-
-            print()
-            print("YOU:")
-            print(user_text)
+                break
 
             # =================================================
-            # 3. MEMORY DECISION
+            # START SESSION
             # =================================================
 
-            print()
-            print("[2] Understanding request...")
+            if command == "s":
 
-            decision = llm.decide_memory_action(
-                user_text
-            )
-
-            print(
-                f"[MEMORY] Action: {decision.action}"
-            )
-
-            # =================================================
-            # 4. SAVE MEMORY
-            # =================================================
-
-            if decision.action == "SAVE_MEMORY":
-
-                if not decision.content.strip():
-
-                    response = (
-                        "I understood that you want "
-                        "me to remember something, "
-                        "but I couldn't determine "
-                        "what to save."
-                    )
-
-                else:
-
-                    memory_id = memory.save(
-                        content=decision.content,
-                        memory_type=(
-                            decision.memory_type
-                        ),
-                    )
+                if session.session_id is not None:
 
                     print(
-                        f"[MEMORY] Saved #{memory_id}: "
-                        f"{decision.content}"
+                        "[VEMORA] A session is "
+                        "already active."
                     )
 
-                    response = (
-                        "Okay, I'll remember that."
-                    )
+                    continue
 
-            # =================================================
-            # 5. SEARCH MEMORY
-            # =================================================
-
-            elif decision.action == "SEARCH_MEMORY":
-
-                query = (
-                    decision.query.strip()
-                    or user_text
+                session.start(
+                    session_type="conversation"
                 )
 
+                print()
                 print(
-                    f"[MEMORY] Searching for: "
-                    f"{query}"
+                    "[VEMORA] SESSION ACTIVE"
                 )
-
-                results = memory.search(
-                    query=query,
-                    limit=5,
-                )
-
                 print(
-                    f"[MEMORY] Found "
-                    f"{len(results)} result(s)."
+                    "Press ENTER to record speech."
                 )
+                print(
+                    "Press E when you want to end "
+                    "the session."
+                )
+                print()
 
-                if not results:
+                # ---------------------------------------------
+                # Session loop
+                # ---------------------------------------------
 
-                    response = (
-                        "I don't have anything "
-                        "relevant saved about that."
+                while (
+                    session.session_id
+                    is not None
+                ):
+
+                    command = input(
+                        "[SESSION] Press ENTER "
+                        "to speak, or E to end: "
+                    ).strip().lower()
+
+                    # -----------------------------------------
+                    # END SESSION
+                    # -----------------------------------------
+
+                    if command == "e":
+
+                        print(
+                            "[SESSION] Ending..."
+                        )
+
+                        transcript = (
+                            session.full_transcript()
+                        )
+
+                        print()
+                        print(
+                            "Session transcript:"
+                        )
+                        print(
+                            "------------------------------"
+                        )
+                        print(transcript)
+
+                        session.end()
+
+                        print()
+                        print(
+                            "[VEMORA] Back to IDLE."
+                        )
+                        print()
+
+                        break
+
+                    # -----------------------------------------
+                    # RECORD
+                    # -----------------------------------------
+
+                    audio_file = (
+                        recorder.record_until_enter(
+                            "data/session_input.wav"
+                        )
                     )
 
-                else:
+                    # -----------------------------------------
+                    # STT
+                    # -----------------------------------------
 
                     print()
                     print(
-                        "[MEMORY] Relevant memories:"
+                        "[SESSION] Transcribing..."
                     )
 
-                    for result in results:
+                    user_text = stt.transcribe(
+                        audio_file
+                    )
+
+                    if not user_text:
 
                         print(
-                            f"  "
-                            f"{result['similarity']:.3f} "
-                            f"| "
-                            f"{result['content']}"
+                            "[SESSION] "
+                            "No speech detected."
                         )
 
-                    # -------------------------------------------------
-                    # Give only the retrieved memories to Gemini.
-                    # -------------------------------------------------
+                        continue
 
-                    memory_context = "\n".join(
-                        f"- {result['content']}"
-                        for result in results
+                    print()
+                    print(
+                        "YOU:"
+                    )
+                    print(user_text)
+
+                    # -----------------------------------------
+                    # SAVE TO SESSION
+                    # -----------------------------------------
+
+                    session.add_transcript(
+                        user_text
                     )
 
-                    response = llm.generate_response(
-                    f"""
-                Answer the user's question using ONLY the relevant memories below.
+                    print(
+                        "[SESSION] Transcript saved."
+                    )
 
-                User question:
-                {user_text}
+                    # -----------------------------------------
+                    # NORMAL VEMORA RESPONSE
+                    # -----------------------------------------
 
-                Relevant memories:
-                {memory_context}
+                    # ---------------------------------------------------------
+                    # SESSION DECISION
+                    # ---------------------------------------------------------
 
-                Rules:
-                - Keep the answer short and natural.
-                - Normally use 1 to 3 sentences.
-                - Give only the information needed to answer.
-                - Do not mention the memory system.
-                - Do not invent information.
-                """
-                )
-            # =================================================
-            # 6. NORMAL CHAT
-            # =================================================
+                    context = session.recent_context(
+                        limit=10
+                    )
 
-            else:
+                    decision = llm.decide_session_action(
+                        user_text=user_text,
+                        session_context=context,
+                    )
 
-                response = llm.generate_response(
-                    user_text
-                )
+                    print(
+                        f"[SESSION] Action: {decision.action}"
+                    )
 
-            # =================================================
-            # 7. OUTPUT
-            # =================================================
+                    # ---------------------------------------------------------
+                    # SAVE MEMORY
+                    # ---------------------------------------------------------
 
-            print()
-            print("VEMORA:")
-            print(response)
+                    if decision.action == "SAVE_MEMORY":
 
-            # =================================================
-            # 8. TTS
-            # =================================================
+                        if decision.content.strip():
 
-            print()
-            print("[3] Speaking...")
+                            memory_id = memory.save(
+                                content=decision.content,
+                                memory_type=decision.memory_type,
+                            )
 
-            tts.speak(response)
+                            print(
+                                f"[MEMORY] Saved #{memory_id}: "
+                                f"{decision.content}"
+                            )
 
-            print()
-            print("----------------------------------------")
-            print("Ready for next question.")
-            print("----------------------------------------")
+                    # ---------------------------------------------------------
+                    # SEARCH MEMORY
+                    # ---------------------------------------------------------
+
+                    elif decision.action == "SEARCH_MEMORY":
+
+                        query = (
+                            decision.query.strip()
+                            or user_text
+                        )
+
+                        results = memory.search(
+                            query=query,
+                            limit=5,
+                        )
+
+                        if results:
+
+                            memory_context = "\n".join(
+                                f"- {item['content']}"
+                                for item in results
+                            )
+
+                            response = llm.generate_response(
+                                f"""
+                    Answer the user's question using ONLY these memories.
+
+                    User:
+                    {user_text}
+
+                    Memories:
+                    {memory_context}
+
+                    Keep the answer concise.
+                    Do not invent information.
+                    """
+                            )
+
+                        else:
+
+                            response = (
+                                "I don't have anything relevant saved."
+                            )
+
+                        print()
+                        print("VEMORA:")
+                        print(response)
+
+                        tts.speak(response)
+
+                    # ---------------------------------------------------------
+                    # DIRECT RESPONSE
+                    # ---------------------------------------------------------
+
+                    elif decision.action == "RESPOND":
+
+                        response = llm.generate_response(
+                            f"""
+                    You are VEMORA in an active listening session.
+
+                    Recent context:
+                    {context}
+
+                    User:
+                    {user_text}
+
+                    Answer briefly and naturally.
+                    """
+                        )
+
+                        print()
+                        print("VEMORA:")
+                        print(response)
+
+                        tts.speak(response)
+
+                    # ---------------------------------------------------------
+                    # LISTEN
+                    # ---------------------------------------------------------
+
+                    else:
+
+                        print(
+                            "[SESSION] Listening silently..."
+                        )
+
+                    print()
+
+                continue
 
         except KeyboardInterrupt:
 
             print()
-            print("[VEMORA] Exiting.")
+            print(
+                "[VEMORA] Interrupted."
+            )
 
-            memory.close()
+            if session.session_id is not None:
+                session.end()
 
             break
 
@@ -268,12 +368,7 @@ def main() -> None:
                 f"[VEMORA] ERROR: {error}"
             )
 
-            print()
-            print(
-                "VEMORA is still running."
-            )
-
-    # Safety close.
+    database.close()
     memory.close()
 
 
