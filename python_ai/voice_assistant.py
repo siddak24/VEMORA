@@ -1,38 +1,163 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
+from ai.action_executor import ActionExecutor
 from ai.providers import create_llm_provider
+from audio.continuous_listener import ContinuousListener
 from audio.local_stt import LocalSTT
-from audio.recorder import AudioRecorder
 from audio.tts import LocalTTS
+from memory.database import MemoryDatabase
 from memory.manager import MemoryManager
 from session.manager import SessionManager
-from memory.database import MemoryDatabase
 
+
+# ==============================================================
+# WAKE WORD
+# ==============================================================
+
+WAKE_WORD = "vemora"
+
+WAKE_WORD_VARIANTS = {
+    "vemora",
+    "vemura",
+    "vimora",
+    "vimura",
+    "vemuro",
+    "vimuro",
+}
+
+
+def normalize_word(text: str) -> str:
+    return re.sub(
+        r"[^a-z]",
+        "",
+        text.lower(),
+    )
+
+
+def is_wake_word(word: str) -> bool:
+    """
+    Detect common Whisper variations of VEMORA.
+    """
+
+    from difflib import SequenceMatcher
+
+    normalized = normalize_word(word)
+
+    if not normalized:
+        return False
+
+    if normalized in WAKE_WORD_VARIANTS:
+        return True
+
+    similarity = SequenceMatcher(
+        None,
+        normalized,
+        WAKE_WORD,
+    ).ratio()
+
+    return similarity >= 0.72
+
+
+def contains_wake_word(text: str) -> bool:
+    """
+    Check whether the transcript contains a word
+    that is likely to be VEMORA.
+    """
+
+    words = re.findall(
+        r"[A-Za-z]+",
+        text,
+    )
+
+    return any(
+        is_wake_word(word)
+        for word in words
+    )
+
+
+def remove_wake_word(text: str) -> str:
+    """
+    Remove the first detected VEMORA wake word
+    from a transcript.
+    """
+
+    words = text.split()
+
+    result: list[str] = []
+    removed = False
+
+    for word in words:
+
+        cleaned = normalize_word(word)
+
+        if not removed and is_wake_word(cleaned):
+
+            removed = True
+            continue
+
+        result.append(word)
+
+    return " ".join(result).strip()
+
+
+# ==============================================================
+# MAIN
+# ==============================================================
 
 def main() -> None:
+
     print()
     print("========================================")
     print("          VEMORA ASSISTANT")
     print("========================================")
     print()
     print("S = start session")
-    print("E = end session")
     print("Q = quit")
     print()
 
-    # ---------------------------------------------------------
-    # Components
-    # ---------------------------------------------------------
+    # ==========================================================
+    # PROJECT PATHS
+    # ==========================================================
 
-    recorder = AudioRecorder()
+    project_root = (
+        Path(__file__).resolve().parents[1]
+    )
 
     model_path = (
-        Path(__file__).resolve().parents[1]
+        project_root
         / "models"
         / "faster-whisper-base"
     )
+
+    database_path = (
+        project_root
+        / "data"
+        / "vemora.db"
+    )
+
+    # ==========================================================
+    # CONTINUOUS MICROPHONE
+    # ==========================================================
+
+    listener = ContinuousListener(
+        sample_rate=16000,
+        channels=1,
+        block_duration=0.25,
+        silence_duration=0.8,
+        energy_threshold=0.015,
+        output_dir=(
+            project_root
+            / "data"
+            / "stream"
+        ),
+    )
+
+    # ==========================================================
+    # STT
+    # ==========================================================
 
     stt = LocalSTT(
         model_path=model_path,
@@ -40,33 +165,60 @@ def main() -> None:
         compute_type="int8",
     )
 
+    # ==========================================================
+    # AI
+    # ==========================================================
+
     llm = create_llm_provider()
+
+    # ==========================================================
+    # TTS
+    # ==========================================================
 
     tts = LocalTTS()
 
+    # ==========================================================
+    # DATABASE
+    # ==========================================================
+
     database = MemoryDatabase(
-        db_path=(
-            Path(__file__).resolve().parents[1]
-            / "data"
-            / "vemora.db"
-        )
+        db_path=database_path
     )
+
+    # ==========================================================
+    # LONG-TERM MEMORY
+    # ==========================================================
 
     memory = MemoryManager(
         user_id="default_user"
     )
 
+    # ==========================================================
+    # SESSION
+    # ==========================================================
+
     session = SessionManager(
         database=database,
         user_id="default_user",
+        embedding_model=memory.embedding_model,
     )
 
+    # ==========================================================
+    # ACTION EXECUTOR
+    # ==========================================================
+
+    executor = ActionExecutor(
+        memory=memory,
+        session=session,
+    )
+
+    print()
     print("[VEMORA] All systems ready.")
     print()
 
-    # ---------------------------------------------------------
-    # Main loop
-    # ---------------------------------------------------------
+    # ==========================================================
+    # COMMAND LOOP
+    # ==========================================================
 
     while True:
 
@@ -76,13 +228,18 @@ def main() -> None:
                 "[VEMORA] Command: "
             ).strip().lower()
 
-            # =================================================
+            # ==================================================
             # QUIT
-            # =================================================
+            # ==================================================
 
             if command == "q":
 
                 if session.session_id is not None:
+
+                    print(
+                        "[SESSION] Ending active session..."
+                    )
+
                     session.end()
 
                 print(
@@ -91,263 +248,386 @@ def main() -> None:
 
                 break
 
-            # =================================================
+            # ==================================================
             # START SESSION
-            # =================================================
+            # ==================================================
 
-            if command == "s":
+            if command != "s":
 
-                if session.session_id is not None:
+                print(
+                    "[VEMORA] Press S to start "
+                    "or Q to quit."
+                )
+
+                continue
+
+            if session.session_id is not None:
+
+                print(
+                    "[VEMORA] A session is already active."
+                )
+
+                continue
+
+            session.start(
+                session_type="conversation"
+            )
+
+            print()
+            print(
+                "[VEMORA] SESSION ACTIVE."
+            )
+            print(
+                "VEMORA is now continuously listening."
+            )
+            print(
+                "Say 'VEMORA' whenever you want a response."
+            )
+            print(
+                "Say 'VEMORA, stop listening' to end the session."
+            )
+            print()
+
+            # ==================================================
+            # ACTIVE SESSION LOOP
+            # ==================================================
+
+            while session.session_id is not None:
+
+                # ------------------------------------------------
+                # Wait for the next speech segment.
+                # No Enter required.
+                # ------------------------------------------------
+
+                try:
+
+                    audio_file = (
+                        listener.listen_once()
+                    )
+
+                except Exception as error:
 
                     print(
-                        "[VEMORA] A session is "
-                        "already active."
+                        f"[LISTENER] ERROR: {error}"
                     )
 
                     continue
 
-                session.start(
-                    session_type="conversation"
-                )
+                # ------------------------------------------------
+                # STT
+                # ------------------------------------------------
 
                 print()
                 print(
-                    "[VEMORA] SESSION ACTIVE"
+                    "[SESSION] Transcribing..."
                 )
-                print(
-                    "Press ENTER to record speech."
-                )
-                print(
-                    "Press E when you want to end "
-                    "the session."
-                )
-                print()
 
-                # ---------------------------------------------
-                # Session loop
-                # ---------------------------------------------
-
-                while (
-                    session.session_id
-                    is not None
-                ):
-
-                    command = input(
-                        "[SESSION] Press ENTER "
-                        "to speak, or E to end: "
-                    ).strip().lower()
-
-                    # -----------------------------------------
-                    # END SESSION
-                    # -----------------------------------------
-
-                    if command == "e":
-
-                        print(
-                            "[SESSION] Ending..."
-                        )
-
-                        transcript = (
-                            session.full_transcript()
-                        )
-
-                        print()
-                        print(
-                            "Session transcript:"
-                        )
-                        print(
-                            "------------------------------"
-                        )
-                        print(transcript)
-
-                        session.end()
-
-                        print()
-                        print(
-                            "[VEMORA] Back to IDLE."
-                        )
-                        print()
-
-                        break
-
-                    # -----------------------------------------
-                    # RECORD
-                    # -----------------------------------------
-
-                    audio_file = (
-                        recorder.record_until_enter(
-                            "data/session_input.wav"
-                        )
-                    )
-
-                    # -----------------------------------------
-                    # STT
-                    # -----------------------------------------
-
-                    print()
-                    print(
-                        "[SESSION] Transcribing..."
-                    )
+                try:
 
                     user_text = stt.transcribe(
                         audio_file
                     )
 
-                    if not user_text:
+                except Exception as error:
+
+                    print(
+                        f"[STT] ERROR: {error}"
+                    )
+
+                    continue
+
+                user_text = user_text.strip()
+
+                if not user_text:
+
+                    print(
+                        "[SESSION] Empty transcript."
+                    )
+
+                    continue
+
+                print()
+                print("YOU:")
+                print(user_text)
+
+                # ------------------------------------------------
+                # Check whether VEMORA was addressed.
+                # ------------------------------------------------
+
+                wake_word_detected = contains_wake_word(
+                    user_text
+                )
+
+                # ------------------------------------------------
+                # Classify the transcript chunk.
+                # ------------------------------------------------
+
+                chunk_type = (
+                    "DIRECT_COMMAND"
+                    if wake_word_detected
+                    else "PASSIVE"
+                )
+
+                # ------------------------------------------------
+                # Store transcript exactly once.
+                # ------------------------------------------------
+
+                session.add_transcript(
+                    user_text,
+                    chunk_type=chunk_type,
+                )
+
+                # ------------------------------------------------
+                # Passive listening
+                # ------------------------------------------------
+
+                if not wake_word_detected:
+
+                    print(
+                        "[SESSION] Passive listening..."
+                    )
+
+                    continue
+                # ==================================================
+                # DIRECT VEMORA INTERACTION DETECTED
+                # ==================================================
+
+                print()
+                print(
+                    "[SESSION] VEMORA detected."
+                )
+
+                command_text = remove_wake_word(
+                    user_text
+                )
+
+                # ------------------------------------------------
+                # Important:
+                # If the passive speech segment contains VEMORA,
+                # the first segment may contain only the wake word
+                # or the start of the command.
+                #
+                # We therefore listen for another segment so the
+                # user's full command can be captured naturally.
+                # ------------------------------------------------
+
+                if not command_text:
+
+                    print(
+                        "[SESSION] Listening for command..."
+                    )
+
+                    try:
+
+                        command_audio = (
+                            listener.listen_once()
+                        )
+
+                        command_text = (
+                            stt.transcribe(
+                                command_audio
+                            ).strip()
+                        )
+
+                    except Exception as error:
 
                         print(
-                            "[SESSION] "
-                            "No speech detected."
+                            f"[COMMAND] ERROR: {error}"
                         )
 
                         continue
 
-                    print()
-                    print(
-                        "YOU:"
-                    )
-                    print(user_text)
+                print()
+                print(
+                    "[COMMAND]"
+                )
+                print(command_text)
 
-                    # -----------------------------------------
-                    # SAVE TO SESSION
-                    # -----------------------------------------
+                # ------------------------------------------------
+                # Store the direct command in the session too.
+                # ------------------------------------------------
+                # ==================================================
+                # SESSION CONTEXT
+                # ==================================================
 
-                    session.add_transcript(
-                        user_text
-                    )
-
-                    print(
-                        "[SESSION] Transcript saved."
-                    )
-
-                    # -----------------------------------------
-                    # NORMAL VEMORA RESPONSE
-                    # -----------------------------------------
-
-                    # ---------------------------------------------------------
-                    # SESSION DECISION
-                    # ---------------------------------------------------------
-
-                    context = session.recent_context(
+                session_context = (
+                    session.recent_context(
                         limit=10
                     )
+                )
 
-                    decision = llm.decide_session_action(
-                        user_text=user_text,
-                        session_context=context,
+                # ==================================================
+                # ACTION PLAN
+                # ==================================================
+
+                print()
+                print(
+                    "[VEMORA] Creating action plan..."
+                )
+
+                plan = llm.create_action_plan(
+                    user_text=command_text,
+                    session_context=session_context,
+                )
+
+                print()
+                print(
+                    "[ACTION PLAN]"
+                )
+
+                print(
+                    plan.model_dump_json(
+                        indent=2
                     )
+                )
+
+                # ==================================================
+                # EXECUTE TOOLS
+                # ==================================================
+
+                print()
+                print(
+                    "[VEMORA] Executing actions..."
+                )
+
+                try:
+
+                    tool_results = (
+                        executor.execute(
+                            plan
+                        )
+                    )
+
+                except Exception as error:
 
                     print(
-                        f"[SESSION] Action: {decision.action}"
+                        f"[TOOLS] ERROR: {error}"
                     )
 
-                    # ---------------------------------------------------------
-                    # SAVE MEMORY
-                    # ---------------------------------------------------------
+                    continue
 
-                    if decision.action == "SAVE_MEMORY":
+                print()
+                print(
+                    "[TOOL RESULTS]"
+                )
+                print(tool_results)
 
-                        if decision.content.strip():
+                # ==================================================
+                # SHOULD VEMORA SPEAK?
+                # ==================================================
 
-                            memory_id = memory.save(
-                                content=decision.content,
-                                memory_type=decision.memory_type,
-                            )
+                if not plan.should_speak:
 
-                            print(
-                                f"[MEMORY] Saved #{memory_id}: "
-                                f"{decision.content}"
-                            )
+                    print(
+                        "[VEMORA] No spoken response required."
+                    )
 
-                    # ---------------------------------------------------------
-                    # SEARCH MEMORY
-                    # ---------------------------------------------------------
+                    continue
 
-                    elif decision.action == "SEARCH_MEMORY":
+                # ==================================================
+                # FINAL GROUNDED RESPONSE
+                # ==================================================
 
-                        query = (
-                            decision.query.strip()
-                            or user_text
+                print()
+                print(
+                    "[VEMORA] Generating response..."
+                )
+
+                try:
+
+                    response = (
+                        llm.generate_grounded_response(
+                            user_text=command_text,
+                            tool_results=tool_results,
+                            instruction=(
+                                plan.response_instruction
+                            ),
                         )
+                    )
 
-                        results = memory.search(
-                            query=query,
-                            limit=5,
-                        )
+                except Exception as error:
 
-                        if results:
+                    print(
+                        f"[AI] ERROR: {error}"
+                    )
 
-                            memory_context = "\n".join(
-                                f"- {item['content']}"
-                                for item in results
-                            )
+                    continue
 
-                            response = llm.generate_response(
-                                f"""
-                    Answer the user's question using ONLY these memories.
+                response = response.strip()
 
-                    User:
-                    {user_text}
+                if not response:
 
-                    Memories:
-                    {memory_context}
+                    print(
+                        "[VEMORA] Empty response."
+                    )
 
-                    Keep the answer concise.
-                    Do not invent information.
-                    """
-                            )
+                    continue
 
-                        else:
+                print()
+                print(
+                    "VEMORA:"
+                )
+                print(response)
 
-                            response = (
-                                "I don't have anything relevant saved."
-                            )
+                # ==================================================
+                # TTS
+                # ==================================================
 
-                        print()
-                        print("VEMORA:")
-                        print(response)
+                print()
+                print(
+                    "[VEMORA] Speaking..."
+                )
 
-                        tts.speak(response)
+                try:
 
-                    # ---------------------------------------------------------
-                    # DIRECT RESPONSE
-                    # ---------------------------------------------------------
+                    tts.speak(
+                        response
+                    )
 
-                    elif decision.action == "RESPOND":
+                except Exception as error:
 
-                        response = llm.generate_response(
-                            f"""
-                    You are VEMORA in an active listening session.
+                    print(
+                        f"[TTS] ERROR: {error}"
+                    )
 
-                    Recent context:
-                    {context}
+                print()
+                print(
+                    "[VEMORA] Back to listening."
+                )
+                print()
 
-                    User:
-                    {user_text}
+                # ==================================================
+                # SPECIAL COMMAND:
+                # STOP LISTENING
+                # ==================================================
 
-                    Answer briefly and naturally.
-                    """
-                        )
+                normalized_command = (
+                    command_text.lower().strip()
+                )
 
-                        print()
-                        print("VEMORA:")
-                        print(response)
-
-                        tts.speak(response)
-
-                    # ---------------------------------------------------------
-                    # LISTEN
-                    # ---------------------------------------------------------
-
-                    else:
-
-                        print(
-                            "[SESSION] Listening silently..."
-                        )
+                if (
+                    "stop listening"
+                    in normalized_command
+                    or "stop the session"
+                    in normalized_command
+                    or "end the session"
+                    in normalized_command
+                ):
 
                     print()
+                    print(
+                        "[SESSION] Stop command detected."
+                    )
 
-                continue
+                    session.end()
+
+                    print(
+                        "[VEMORA] Back to IDLE."
+                    )
+
+                    break
+
+            print()
 
         except KeyboardInterrupt:
 
@@ -357,6 +637,7 @@ def main() -> None:
             )
 
             if session.session_id is not None:
+
                 session.end()
 
             break
@@ -365,11 +646,28 @@ def main() -> None:
 
             print()
             print(
-                f"[VEMORA] ERROR: {error}"
+                "[VEMORA] ERROR:"
+            )
+            print(error)
+
+            print()
+            print(
+                "[VEMORA] Returning to command mode."
             )
 
-    database.close()
-    memory.close()
+    # ==========================================================
+    # CLEANUP
+    # ==========================================================
+
+    try:
+        memory.close()
+    except Exception:
+        pass
+
+    try:
+        database.close()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

@@ -6,18 +6,23 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from memory.database import MemoryDatabase
+from memory.retention import calculate_expiry
 
 
 class MemoryManager:
     """
-    VEMORA semantic memory manager.
+    High-level semantic memory manager for VEMORA.
 
     Responsibilities:
+        - Generate embeddings
+        - Save memories
+        - Search memories semantically
+        - Update memories
+        - Delete memories
+        - Remove expired memories
 
-        1. Generate embeddings for memories.
-        2. Store embeddings.
-        3. Generate embeddings for queries.
-        4. Perform similarity search.
+    The database layer handles SQLite.
+    This class handles memory logic.
     """
 
     def __init__(
@@ -26,6 +31,10 @@ class MemoryManager:
         user_id: str = "default_user",
         embedding_model: str = "all-MiniLM-L6-v2",
     ) -> None:
+
+        # --------------------------------------------------------
+        # Database path
+        # --------------------------------------------------------
 
         if db_path is None:
 
@@ -43,6 +52,10 @@ class MemoryManager:
 
         self.user_id = user_id
 
+        # --------------------------------------------------------
+        # Embedding model
+        # --------------------------------------------------------
+
         print(
             "[VEMORA] Loading embedding model..."
         )
@@ -57,42 +70,13 @@ class MemoryManager:
             "[VEMORA] Embedding model ready."
         )
 
+        # --------------------------------------------------------
+        # Database
+        # --------------------------------------------------------
+
         self.database = MemoryDatabase(
             db_path=db_path
         )
-
-        self._ensure_embedding_column()
-
-    # ============================================================
-    # DATABASE MIGRATION
-    # ============================================================
-
-    def _ensure_embedding_column(self) -> None:
-
-        cursor = self.database.connection.execute(
-            "PRAGMA table_info(memories)"
-        )
-
-        columns = [
-            row["name"]
-            for row in cursor.fetchall()
-        ]
-
-        if "embedding" not in columns:
-
-            print(
-                "[VEMORA] Adding embedding column "
-                "to existing memory database..."
-            )
-
-            self.database.connection.execute(
-                """
-                ALTER TABLE memories
-                ADD COLUMN embedding TEXT
-                """
-            )
-
-            self.database.connection.commit()
 
     # ============================================================
     # EMBEDDING
@@ -118,18 +102,45 @@ class MemoryManager:
         self,
         content: str,
         memory_type: str = "general",
+        importance: float = 0.5,
+        confidence: float = 0.5,
+        retention: str = "SHORT_TERM",
     ) -> int:
 
+        content = content.strip()
+
+        if not content:
+            raise ValueError(
+                "Cannot save empty memory."
+            )
+
+        # Generate embedding.
         embedding = self._embed(
             content
         )
 
+        # Calculate expiration.
+        expiry = calculate_expiry(
+            retention
+        )
+
+        expires_at = (
+            expiry.isoformat()
+            if expiry is not None
+            else None
+        )
+
+        # Store in database.
         memory_id = (
             self.database.add_memory(
                 user_id=self.user_id,
                 content=content,
                 memory_type=memory_type,
                 embedding=embedding,
+                importance=importance,
+                confidence=confidence,
+                retention=retention,
+                expires_at=expires_at,
             )
         )
 
@@ -146,10 +157,41 @@ class MemoryManager:
         min_similarity: float = 0.30,
     ) -> list[dict]:
 
+        query = query.strip()
+
+        if not query:
+            return []
+
+        # --------------------------------------------------------
+        # Remove expired memories first.
+        # --------------------------------------------------------
+
+        expired_count = (
+            self.database
+            .delete_expired_memories(
+                user_id=self.user_id
+            )
+        )
+
+        if expired_count > 0:
+
+            print(
+                f"[MEMORY] Removed "
+                f"{expired_count} expired memory(s)."
+            )
+
+        # --------------------------------------------------------
+        # Embed query.
+        # --------------------------------------------------------
+
         query_embedding = np.asarray(
             self._embed(query),
             dtype=np.float32,
         )
+
+        # --------------------------------------------------------
+        # Get stored memory embeddings.
+        # --------------------------------------------------------
 
         memories = (
             self.database
@@ -159,6 +201,10 @@ class MemoryManager:
         )
 
         scored_results: list[dict] = []
+
+        # --------------------------------------------------------
+        # Similarity search.
+        # --------------------------------------------------------
 
         for memory in memories:
 
@@ -178,7 +224,7 @@ class MemoryManager:
 
                 memory["similarity"] = similarity
 
-                # Don't expose the large vector to callers.
+                # Do not return the actual vector.
                 memory.pop(
                     "embedding",
                     None,
@@ -188,6 +234,10 @@ class MemoryManager:
                     memory
                 )
 
+        # --------------------------------------------------------
+        # Highest similarity first.
+        # --------------------------------------------------------
+
         scored_results.sort(
             key=lambda item: item["similarity"],
             reverse=True,
@@ -196,10 +246,78 @@ class MemoryManager:
         return scored_results[:limit]
 
     # ============================================================
-    # ALL MEMORIES
+    # UPDATE
+    # ============================================================
+
+    def update(
+        self,
+        memory_id: int,
+        content: str,
+        memory_type: str = "general",
+        importance: float = 0.5,
+        confidence: float = 0.5,
+        retention: str = "SHORT_TERM",
+    ) -> bool:
+
+        content = content.strip()
+
+        if not content:
+            raise ValueError(
+                "Cannot update memory with empty content."
+            )
+
+        # New content needs a new embedding.
+        embedding = self._embed(
+            content
+        )
+
+        # Recalculate retention.
+        expiry = calculate_expiry(
+            retention
+        )
+
+        expires_at = (
+            expiry.isoformat()
+            if expiry is not None
+            else None
+        )
+
+        return self.database.update_memory(
+            memory_id=memory_id,
+            user_id=self.user_id,
+            content=content,
+            embedding=embedding,
+            memory_type=memory_type,
+            importance=importance,
+            confidence=confidence,
+            retention=retention,
+            expires_at=expires_at,
+        )
+
+    # ============================================================
+    # DELETE
+    # ============================================================
+
+    def delete(
+        self,
+        memory_id: int,
+    ) -> bool:
+
+        return self.database.delete_memory(
+            memory_id=memory_id,
+            user_id=self.user_id,
+        )
+
+    # ============================================================
+    # GET ALL
     # ============================================================
 
     def all(self) -> list[dict]:
+
+        # Clean expired memories before displaying them.
+        self.database.delete_expired_memories(
+            user_id=self.user_id
+        )
 
         return (
             self.database
