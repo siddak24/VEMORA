@@ -6,18 +6,36 @@ from pydantic import BaseModel, Field
 
 
 class Action(BaseModel):
+    """
+    One tool action requested by the SLM/LLM.
+    """
+
     tool: Literal[
         "search_session",
         "search_memory",
         "save_memory",
         "update_memory",
         "delete_memory",
+        "create_task",
+        "search_task",
+        "complete_task",
+        "delete_task",
+        "get_current_time",
+        "get_current_date",
     ]
 
+    # Used by search/update/delete operations.
     query: str = ""
 
+    # Used for memory content.
     content: str = ""
 
+    # Used when creating a task.
+    title: str = ""
+
+    description: str = ""
+
+    # Memory fields.
     memory_type: str = "general"
 
     importance: float = Field(
@@ -39,13 +57,25 @@ class Action(BaseModel):
         "LONG_TERM",
     ] = "SHORT_TERM"
 
+    # Task fields.
+    due_at: str = ""
+
+    expires_at: str = ""
+
+    status: Literal[
+        "PENDING",
+        "COMPLETED",
+        "CANCELLED",
+    ] = "PENDING"
+
+    # Optional explicit IDs.
+    memory_id: int | None = None
+    task_id: int | None = None
+
 
 class ActionPlan(BaseModel):
     """
-    Plan produced by the SLM/LLM.
-
-    The model decides what tools are needed.
-    Python executes them.
+    Structured plan produced by the SLM/LLM.
     """
 
     actions: list[Action] = Field(
@@ -54,9 +84,7 @@ class ActionPlan(BaseModel):
 
     should_speak: bool = True
 
-    response_instruction: str = Field(
-        default=(
-            "Answer the user concisely using "
-            "the available evidence."
-        )
+    response_instruction: str = (
+        "Answer the user concisely using "
+        "the available evidence."
     )

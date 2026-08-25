@@ -14,6 +14,10 @@ from session.decision import SessionDecision
 load_dotenv()
 
 
+# ==============================================================
+# DEMO PROVIDER
+# ==============================================================
+
 class DemoProvider:
     """
     Local provider used when VEMORA is running in demo mode.
@@ -68,6 +72,17 @@ class DemoProvider:
             ),
         )
 
+    def process_passive_batch(
+        self,
+        transcript_batch: str,
+    ) -> ActionPlan:
+
+        return ActionPlan(
+            actions=[],
+            should_speak=False,
+            response_instruction="",
+        )
+
     def generate_grounded_response(
         self,
         user_text: str,
@@ -82,6 +97,10 @@ class DemoProvider:
         )
 
 
+# ==============================================================
+# GEMINI PROVIDER
+# ==============================================================
+
 class GeminiProvider:
     """
     Gemini API provider for VEMORA.
@@ -94,6 +113,7 @@ class GeminiProvider:
         )
 
         if not api_key:
+
             raise RuntimeError(
                 "GEMINI_API_KEY is missing from .env"
             )
@@ -122,25 +142,25 @@ Decide what VEMORA should do with the user's message.
 Possible actions:
 
 1. CHAT
-Use for normal questions, conversation,
-explanations, translations, calculations,
-and general requests.
+   Use for normal questions, conversation,
+   explanations, translations, calculations,
+   and general requests.
 
 2. SAVE_MEMORY
-Use when the user wants VEMORA to remember
-useful information for later.
+   Use when the user wants VEMORA to remember
+   useful information for later.
 
 3. SEARCH_MEMORY
-Use when the user asks about something
-VEMORA may have remembered previously.
+   Use when the user asks about something
+   VEMORA may have remembered previously.
 
 4. UPDATE_MEMORY
-Use when the user is correcting or changing
-a previously stored memory.
+   Use when the user is correcting or changing
+   a previously stored memory.
 
 5. DELETE_MEMORY
-Use when the user explicitly asks VEMORA
-to forget or delete something.
+   Use when the user explicitly asks VEMORA
+   to forget or delete something.
 
 Rules:
 
@@ -151,11 +171,10 @@ Rules:
 - Preserve the user's meaning.
 - Keep saved content concise.
 - For SEARCH_MEMORY, create a useful query.
-- For UPDATE_MEMORY, create a useful query
-  to identify the old memory and provide
-  the corrected content.
-- For DELETE_MEMORY, create a useful query
-  to identify the memory to remove.
+- For UPDATE_MEMORY, provide a query identifying
+  the old memory and provide the corrected content.
+- For DELETE_MEMORY, provide a query identifying
+  the memory to remove.
 - For CHAT, leave content and query empty.
 - Estimate importance and confidence carefully.
 - Choose an appropriate retention policy.
@@ -201,29 +220,29 @@ VEMORA should normally remain SILENT.
 Possible actions:
 
 1. LISTEN
-The utterance is part of the ongoing
-conversation. Record useful context
-but do not respond.
+   The utterance is part of the ongoing
+   conversation. Record useful context
+   but do not respond.
 
 2. RESPOND
-The user is directly asking VEMORA
-something or explicitly requesting
-a response.
+   The user is directly asking VEMORA
+   something or explicitly requesting
+   a response.
 
 3. SAVE_MEMORY
-The utterance contains useful persistent
-personal information worth remembering.
+   The utterance contains useful persistent
+   personal information worth remembering.
 
 4. SEARCH_MEMORY
-The user is asking about information
-VEMORA may already remember.
+   The user is asking about information
+   VEMORA may already remember.
 
 5. UPDATE_MEMORY
-The user is correcting stored information.
+   The user is correcting stored information.
 
 6. DELETE_MEMORY
-The user asks VEMORA to forget stored
-information.
+   The user asks VEMORA to forget stored
+   information.
 
 Rules:
 
@@ -263,7 +282,146 @@ Current utterance:
         )
 
     # ==========================================================
-    # ACTION PLAN
+    # PASSIVE SESSION PROCESSING
+    # ==========================================================
+
+    def process_passive_batch(
+        self,
+        transcript_batch: str,
+    ) -> ActionPlan:
+        """
+        Analyze passive session speech.
+
+        The user is not directly asking VEMORA
+        for a spoken response.
+
+        The model may:
+            - save useful memories
+            - update memories
+            - delete memories when explicitly requested
+            - create tasks
+
+        It must never speak.
+        """
+
+        prompt = f"""
+You are VEMORA's passive-session processor.
+
+The user has intentionally activated an ongoing
+listening session.
+
+The transcript below contains speech from that
+session.
+
+Your job is to identify information that should
+be acted on silently.
+
+- If the user says they completed, submitted, finished,
+sent, paid, attended, or otherwise completed something
+that clearly corresponds to an existing task, use
+complete_task.
+
+- For complete_task, provide a useful query describing
+the completed task.
+
+- Do not mark a task completed unless the transcript
+clearly indicates completion.
+
+Available tools:
+
+1. save_memory
+   Save useful information that may matter later.
+
+2. update_memory
+   Update an existing long-term memory when the
+   transcript clearly corrects existing information.
+
+3. delete_memory
+   Delete a memory only when the user explicitly
+   asks VEMORA to forget something.
+
+4. create_task
+   Create a task when the user expresses an action,
+   obligation, or reminder that they need to perform.
+
+5. complete_task
+   Mark an existing task as completed when the user
+   indicates that they have finished an outstanding task.
+
+Do NOT use:
+- search_session
+- search_memory
+- search_task
+- delete_task
+
+from passive processing.
+
+Task vs event rules:
+
+- "I have a presentation on Monday."
+  This is normally an EVENT or MEMORY.
+
+- "I need to prepare my presentation by Monday."
+  This is a TASK.
+
+- "I have to submit my assignment by Friday."
+  This is a TASK.
+
+- "Remind me to call Rahul tomorrow."
+  This is a TASK.
+
+- A task represents something the user needs to do.
+
+- An event represents something that happens to
+  the user.
+
+
+Memory rules:
+
+- Do not save ordinary chatter.
+- Do not create an action for every sentence.
+- Prefer useful personal information, preferences,
+  schedules, deadlines, commitments, important facts,
+  and recurring information.
+- Do not invent dates, times, people, or facts.
+- Preserve uncertainty when the transcript is ambiguous.
+- Estimate importance and confidence conservatively.
+- Choose an appropriate retention policy.
+- Never speak to the user from passive processing.
+- should_speak MUST be false.
+
+For create_task:
+
+- title should clearly describe the action.
+- description should contain useful additional context.
+- due_at should contain the due date/time when known.
+- expires_at should be set when the task should no longer
+  remain relevant.
+
+Transcript:
+{transcript_batch}
+"""
+
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=ActionPlan,
+            ),
+        )
+
+        plan = ActionPlan.model_validate_json(
+            response.text
+        )
+
+        # Safety rule: passive processing never speaks.
+        plan.should_speak = False
+
+        return plan
+
+    # ==========================================================
+    # DIRECT ACTION PLANNER
     # ==========================================================
 
     def create_action_plan(
@@ -281,36 +439,120 @@ to answer the user's request.
 Available tools:
 
 1. search_session
-Search the current active session for recent
-information.
+   Search the current active session.
 
 2. search_memory
-Search persistent long-term semantic memory.
+   Search persistent long-term memory.
 
 3. save_memory
-Save useful information for future use.
+   Save useful information for future recall.
 
 4. update_memory
-Update an existing persistent memory.
+   Correct an existing memory.
 
 5. delete_memory
-Delete a persistent memory.
+   Forget an existing memory.
 
-Rules:
+6. create_task
+   Create something the user needs to do.
 
-- Use multiple tools when useful.
-- You may request session and long-term
-  memory searches together.
+7. search_task
+   Find an existing task.
+
+8. complete_task
+   Mark an existing task as completed.
+
+9. delete_task
+   Delete an existing task.
+
+10. get_current_time
+    Use when the user asks for the current time.
+
+11. get_current_date
+    Use when the user asks what day/date it is.
+
+Time rules:
+
+- Never guess the current time or date.
+- For current time, use get_current_time.
+- For current date/day, use get_current_date.
+- These tools should be preferred over general model knowledge.
+
+Task rules:
+
+- "I have a presentation on Monday" is normally
+  an EVENT or memory, not a task.
+
+- "I need to prepare my presentation by Monday"
+  is a TASK.
+
+- "Remind me to prepare my presentation by Monday"
+  is a TASK.
+
+- "I need to submit my assignment by Friday"
+  is a TASK.
+
+- A task represents an action the user needs to perform.
+
+- An event represents something that happens to the user.
+
+- Use create_task only when the user expresses an
+  action, obligation, or reminder.
+
+- Use complete_task when the user says they finished
+  an existing task.
+
+- Use search_task before completing or deleting a task
+  when the task ID is not known.
+
+- Do not create duplicate tasks unnecessarily.
+
+Memory rules:
+
+- Use save_memory only when persistent information
+  is genuinely useful.
+- Use update_memory when the user is correcting
+  something already remembered.
+- Use delete_memory when the user explicitly asks
+  VEMORA to forget something.
+
+Retrieval rules:
+
+- Use search_session when the answer may exist in
+  the current session.
+- Use search_memory when the answer may exist in
+  long-term memory.
+- You may request both searches when the source is unclear.
 - Do not invent information.
-- Do not save ordinary conversation unless
-  it is useful for future recall or
-  personalization.
+
+For task dates:
+
+- When an exact date/time is known, provide due_at in ISO format:
+  YYYY-MM-DDTHH:MM:SS
+
+- Do not use "10 PM" when an absolute date/time can be determined.
+- Do not invent the date if it is unknown.
+
+Response rules:
+
 - If the user directly asks VEMORA something,
   should_speak should normally be true.
-- During passive listening, should_speak
-  can be false.
 - Keep the action plan minimal.
 - Only request tools that are actually useful.
+
+For create_task:
+- title
+- description
+- due_at
+- expires_at
+
+For complete_task:
+- task_id if known
+- otherwise query
+
+For delete_task:
+- task_id if known
+- otherwise query
 
 Current session context:
 {session_context}
@@ -364,8 +606,8 @@ Rules:
 - Keep the answer concise.
 - Normally use 1 to 3 sentences.
 - Give the most useful information first.
-- Do not mention tools, databases,
-  prompts, or internal architecture.
+- Do not mention tools, databases, prompts,
+  or internal architecture.
 - The response will be spoken aloud.
 """
 
@@ -391,15 +633,16 @@ You are VEMORA, a smart wearable AI assistant.
 Answer the user's request clearly and naturally.
 
 Response rules:
+
 - Keep the answer SHORT and concise.
 - Normally use 1 to 3 sentences.
 - Give the most important information first.
 - Do not add unnecessary background or explanations.
 - Do not repeat the user's question.
 - For simple factual questions, answer in 1 sentence.
-- Only give a long or detailed answer when the
-  user explicitly asks for an explanation,
-  details, steps, or a longer response.
+- Only give a long or detailed answer when the user
+  explicitly asks for an explanation, details, steps,
+  or a longer response.
 - The response will be spoken aloud,
   so make it natural for speech.
 
@@ -420,10 +663,13 @@ User:
 # ==============================================================
 
 def create_llm_provider():
-    demo_mode = os.getenv(
-        "DEMO_MODE",
-        "true",
-    ).lower() == "true"
+    demo_mode = (
+        os.getenv(
+            "DEMO_MODE",
+            "true",
+        ).lower()
+        == "true"
+    )
 
     provider = os.getenv(
         "AI_PROVIDER",
@@ -431,15 +677,19 @@ def create_llm_provider():
     ).lower()
 
     if demo_mode:
+
         print(
             "[VEMORA] Demo AI enabled."
         )
+
         return DemoProvider()
 
     if provider == "gemini":
+
         print(
             "[VEMORA] Gemini API enabled."
         )
+
         return GeminiProvider()
 
     raise ValueError(

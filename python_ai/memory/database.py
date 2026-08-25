@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import threading
 import json
 import sqlite3
 from pathlib import Path
@@ -25,7 +25,7 @@ class MemoryDatabase:
         self,
         db_path: str | Path,
     ) -> None:
-
+        self._lock = threading.RLock()
         self.db_path = Path(db_path)
 
         self.db_path.parent.mkdir(
@@ -34,7 +34,8 @@ class MemoryDatabase:
         )
 
         self.connection = sqlite3.connect(
-            self.db_path
+            self.db_path,
+            check_same_thread=False,
         )
 
         self.connection.row_factory = sqlite3.Row
@@ -58,7 +59,34 @@ class MemoryDatabase:
     # ============================================================
 
     def _create_tables(self) -> None:
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
 
+                user_id TEXT NOT NULL,
+
+                title TEXT NOT NULL,
+
+                description TEXT,
+
+                due_at TIMESTAMP,
+
+                status TEXT NOT NULL
+                    DEFAULT 'PENDING',
+
+                created_at TIMESTAMP
+                    DEFAULT CURRENT_TIMESTAMP,
+
+                updated_at TIMESTAMP
+                    DEFAULT CURRENT_TIMESTAMP,
+
+                completed_at TIMESTAMP,
+
+                expires_at TIMESTAMP
+            )
+            """
+        )
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS memories (
@@ -96,6 +124,153 @@ class MemoryDatabase:
         )
 
         self.connection.commit()
+
+    def get_tasks(
+        self,
+        user_id: str,
+        status: str | None = None,
+    ) -> list[dict]:
+
+        if status is None:
+
+            cursor = self.connection.execute(
+                """
+                SELECT *
+                FROM tasks
+                WHERE user_id = ?
+                ORDER BY
+                    CASE
+                        WHEN due_at IS NULL THEN 1
+                        ELSE 0
+                    END,
+                    due_at ASC
+                """,
+                (user_id,),
+            )
+
+        else:
+
+            cursor = self.connection.execute(
+                """
+                SELECT *
+                FROM tasks
+                WHERE user_id = ?
+                AND status = ?
+                ORDER BY due_at ASC
+                """,
+                (
+                    user_id,
+                    status,
+                ),
+            )
+
+        return [
+            dict(row)
+            for row in cursor.fetchall()
+        ]
+
+    def create_task(
+        self,
+        user_id: str,
+        title: str,
+        description: str | None,
+        due_at: str | None,
+        expires_at: str | None,
+    ) -> int:
+
+        cursor = self.connection.execute(
+            """
+            INSERT INTO tasks (
+                user_id,
+                title,
+                description,
+                due_at,
+                expires_at,
+                status
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                title,
+                description,
+                due_at,
+                expires_at,
+                "PENDING",
+            ),
+        )
+
+        self.connection.commit()
+
+        return int(cursor.lastrowid)
+
+    def complete_task(
+        self,
+        task_id: int,
+        user_id: str,
+    ) -> bool:
+
+        cursor = self.connection.execute(
+            """
+            UPDATE tasks
+            SET
+                status = 'COMPLETED',
+                completed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            AND user_id = ?
+            """,
+            (
+                task_id,
+                user_id,
+            ),
+        )
+
+        self.connection.commit()
+
+        return cursor.rowcount > 0
+
+    def delete_task(
+        self,
+        task_id: int,
+        user_id: str,
+    ) -> bool:
+
+        cursor = self.connection.execute(
+            """
+            DELETE FROM tasks
+            WHERE id = ?
+            AND user_id = ?
+            """,
+            (
+                task_id,
+                user_id,
+            ),
+        )
+
+        self.connection.commit()
+
+        return cursor.rowcount > 0
+
+    def delete_expired_tasks(
+        self,
+        user_id: str,
+    ) -> int:
+
+        cursor = self.connection.execute(
+            """
+            DELETE FROM tasks
+            WHERE user_id = ?
+            AND expires_at IS NOT NULL
+            AND datetime(expires_at)
+                <= datetime('now')
+            """,
+            (user_id,),
+        )
+
+        self.connection.commit()
+
+        return cursor.rowcount
 
     # ============================================================
     # MEMORY MIGRATION

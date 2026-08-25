@@ -1,20 +1,33 @@
 from __future__ import annotations
-
+from task.scheduler import TaskScheduler
+import os
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 from ai.action_executor import ActionExecutor
 from ai.providers import create_llm_provider
+
 from audio.continuous_listener import ContinuousListener
 from audio.local_stt import LocalSTT
 from audio.tts import LocalTTS
+
 from memory.database import MemoryDatabase
 from memory.manager import MemoryManager
+
+from task.manager import TaskManager
+
 from session.manager import SessionManager
+from session.processor import SessionProcessor
+
+
+load_dotenv()
 
 
 # ==============================================================
-# WAKE WORD
+# CONFIGURATION
 # ==============================================================
 
 WAKE_WORD = "vemora"
@@ -28,8 +41,21 @@ WAKE_WORD_VARIANTS = {
     "vimuro",
 }
 
+PASSIVE_SILENCE_DURATION = 0.8
+COMMAND_START_GRACE_PERIOD = 4.0
+
+WAKE_WORD_SIMILARITY_THRESHOLD = 0.72
+
+
+# ==============================================================
+# WAKE WORD HELPERS
+# ==============================================================
 
 def normalize_word(text: str) -> str:
+    """
+    Normalize a word for wake-word comparison.
+    """
+
     return re.sub(
         r"[^a-z]",
         "",
@@ -39,10 +65,8 @@ def normalize_word(text: str) -> str:
 
 def is_wake_word(word: str) -> bool:
     """
-    Detect common Whisper variations of VEMORA.
+    Detect VEMORA and common Whisper variations.
     """
-
-    from difflib import SequenceMatcher
 
     normalized = normalize_word(word)
 
@@ -58,13 +82,16 @@ def is_wake_word(word: str) -> bool:
         WAKE_WORD,
     ).ratio()
 
-    return similarity >= 0.72
+    return (
+        similarity
+        >= WAKE_WORD_SIMILARITY_THRESHOLD
+    )
 
 
 def contains_wake_word(text: str) -> bool:
     """
-    Check whether the transcript contains a word
-    that is likely to be VEMORA.
+    Check whether the transcript contains a likely
+    VEMORA wake word.
     """
 
     words = re.findall(
@@ -80,8 +107,7 @@ def contains_wake_word(text: str) -> bool:
 
 def remove_wake_word(text: str) -> str:
     """
-    Remove the first detected VEMORA wake word
-    from a transcript.
+    Remove the first detected VEMORA wake word.
     """
 
     words = text.split()
@@ -101,6 +127,53 @@ def remove_wake_word(text: str) -> str:
         result.append(word)
 
     return " ".join(result).strip()
+
+
+# ==============================================================
+# AUDIO CLEANUP
+# ==============================================================
+
+def cleanup_audio_file(
+    audio_file: Path,
+) -> None:
+    """
+    Delete a temporary audio segment after successful STT,
+    unless KEEP_AUDIO_SEGMENTS=true is enabled.
+    """
+
+    keep_audio = (
+        os.getenv(
+            "KEEP_AUDIO_SEGMENTS",
+            "false",
+        ).lower()
+        == "true"
+    )
+
+    if keep_audio:
+
+        print(
+            f"[AUDIO] Keeping segment: {audio_file}"
+        )
+
+        return
+
+    try:
+
+        if audio_file.exists():
+
+            audio_file.unlink()
+
+            print(
+                f"[AUDIO] Deleted temporary segment: "
+                f"{audio_file}"
+            )
+
+    except OSError as error:
+
+        print(
+            f"[AUDIO] Could not delete "
+            f"{audio_file}: {error}"
+        )
 
 
 # ==============================================================
@@ -138,6 +211,12 @@ def main() -> None:
         / "vemora.db"
     )
 
+    stream_directory = (
+        project_root
+        / "data"
+        / "stream"
+    )
+
     # ==========================================================
     # CONTINUOUS MICROPHONE
     # ==========================================================
@@ -146,13 +225,9 @@ def main() -> None:
         sample_rate=16000,
         channels=1,
         block_duration=0.25,
-        silence_duration=0.8,
+        silence_duration=PASSIVE_SILENCE_DURATION,
         energy_threshold=0.015,
-        output_dir=(
-            project_root
-            / "data"
-            / "stream"
-        ),
+        output_dir=stream_directory,
     )
 
     # ==========================================================
@@ -182,7 +257,7 @@ def main() -> None:
     # ==========================================================
 
     database = MemoryDatabase(
-        db_path=database_path
+        db_path=database_path,
     )
 
     # ==========================================================
@@ -190,9 +265,24 @@ def main() -> None:
     # ==========================================================
 
     memory = MemoryManager(
-        user_id="default_user"
+        user_id="default_user",
     )
 
+    # ==========================================================
+    # TASKS
+    # ==========================================================
+
+    tasks = TaskManager(
+        database=database,
+        user_id="default_user",
+    )
+
+    task_scheduler = TaskScheduler(
+        tasks=tasks,
+        interval_seconds=30,
+    )
+
+    task_scheduler.start()
     # ==========================================================
     # SESSION
     # ==========================================================
@@ -204,20 +294,33 @@ def main() -> None:
     )
 
     # ==========================================================
+    # SESSION PROCESSOR
+    # ==========================================================
+
+    processor = SessionProcessor(
+        session=session,
+        batch_size=5,
+        batch_interval_seconds=20.0,
+    )
+
+    # ==========================================================
     # ACTION EXECUTOR
     # ==========================================================
 
     executor = ActionExecutor(
         memory=memory,
         session=session,
+        tasks=tasks,
     )
 
     print()
-    print("[VEMORA] All systems ready.")
+    print(
+        "[VEMORA] All systems ready."
+    )
     print()
 
     # ==========================================================
-    # COMMAND LOOP
+    # MAIN COMMAND LOOP
     # ==========================================================
 
     while True:
@@ -239,6 +342,20 @@ def main() -> None:
                     print(
                         "[SESSION] Ending active session..."
                     )
+
+                    if processor.has_pending_passive_data():
+
+                        pending = (
+                            processor.flush()
+                        )
+
+                        if pending:
+
+                            print(
+                                "[SESSION] "
+                                "Pending passive data remains "
+                                "unprocessed."
+                            )
 
                     session.end()
 
@@ -269,8 +386,10 @@ def main() -> None:
 
                 continue
 
+            processor.reset()
+
             session.start(
-                session_type="conversation"
+                session_type="conversation",
             )
 
             print()
@@ -284,6 +403,10 @@ def main() -> None:
                 "Say 'VEMORA' whenever you want a response."
             )
             print(
+                "You can also state useful tasks naturally "
+                "without saying VEMORA."
+            )
+            print(
                 "Say 'VEMORA, stop listening' to end the session."
             )
             print()
@@ -295,14 +418,17 @@ def main() -> None:
             while session.session_id is not None:
 
                 # ------------------------------------------------
-                # Wait for the next speech segment.
-                # No Enter required.
+                # LISTEN FOR SPEECH
                 # ------------------------------------------------
 
                 try:
 
                     audio_file = (
-                        listener.listen_once()
+                        listener.listen_once(
+                            silence_duration=(
+                                PASSIVE_SILENCE_DURATION
+                            )
+                        )
                     )
 
                 except Exception as error:
@@ -324,8 +450,10 @@ def main() -> None:
 
                 try:
 
-                    user_text = stt.transcribe(
-                        audio_file
+                    user_text = (
+                        stt.transcribe(
+                            audio_file
+                        ).strip()
                     )
 
                 except Exception as error:
@@ -334,9 +462,16 @@ def main() -> None:
                         f"[STT] ERROR: {error}"
                     )
 
+                    print(
+                        "[AUDIO] Keeping failed STT "
+                        "segment for debugging."
+                    )
+
                     continue
 
-                user_text = user_text.strip()
+                cleanup_audio_file(
+                    audio_file
+                )
 
                 if not user_text:
 
@@ -351,45 +486,114 @@ def main() -> None:
                 print(user_text)
 
                 # ------------------------------------------------
-                # Check whether VEMORA was addressed.
+                # WAKE WORD DETECTION
                 # ------------------------------------------------
 
-                wake_word_detected = contains_wake_word(
-                    user_text
+                wake_word_detected = (
+                    contains_wake_word(
+                        user_text
+                    )
                 )
 
-                # ------------------------------------------------
-                # Classify the transcript chunk.
-                # ------------------------------------------------
-
-                chunk_type = (
-                    "DIRECT_COMMAND"
-                    if wake_word_detected
-                    else "PASSIVE"
-                )
-
-                # ------------------------------------------------
-                # Store transcript exactly once.
-                # ------------------------------------------------
-
-                session.add_transcript(
-                    user_text,
-                    chunk_type=chunk_type,
-                )
-
-                # ------------------------------------------------
-                # Passive listening
-                # ------------------------------------------------
+                # ==================================================
+                # PASSIVE SPEECH
+                # ==================================================
 
                 if not wake_word_detected:
+
+                    processor.add_passive_chunk(
+                        user_text
+                    )
 
                     print(
                         "[SESSION] Passive listening..."
                     )
 
+                    # ------------------------------------------------
+                    # PASSIVE AI BATCH
+                    # ------------------------------------------------
+
+                    if processor.should_process_passive():
+
+                        passive_batch = (
+                            processor.get_passive_batch()
+                        )
+
+                        if passive_batch:
+
+                            print()
+                            print(
+                                "[SESSION] "
+                                "Processing passive batch..."
+                            )
+
+                            print(
+                                "--------------------------------"
+                            )
+
+                            print(
+                                passive_batch
+                            )
+
+                            try:
+
+                                passive_plan = (
+                                    llm.process_passive_batch(
+                                        passive_batch
+                                    )
+                                )
+
+                                print()
+                                print(
+                                    "[PASSIVE AI PLAN]"
+                                )
+
+                                print(
+                                    passive_plan.model_dump_json(
+                                        indent=2
+                                    )
+                                )
+
+                                # Passive processing can:
+                                #   - save memories
+                                #   - update memories
+                                #   - delete memories
+                                #   - create tasks
+                                #
+                                # It cannot search or speak.
+
+                                passive_results = (
+                                    executor.execute(
+                                        passive_plan,
+                                        allowed_tools={
+                                            "save_memory",
+                                            "update_memory",
+                                            "delete_memory",
+                                            "create_task",
+                                            "complete_task",
+                                        },
+                                    )
+                                )
+
+                                print()
+                                print(
+                                    "[PASSIVE ACTION RESULTS]"
+                                )
+
+                                print(
+                                    passive_results
+                                )
+
+                            except Exception as error:
+
+                                print(
+                                    f"[PASSIVE AI] ERROR: {error}"
+                                )
+
                     continue
+
                 # ==================================================
-                # DIRECT VEMORA INTERACTION DETECTED
+                # DIRECT VEMORA INTERACTION
                 # ==================================================
 
                 print()
@@ -397,36 +601,32 @@ def main() -> None:
                     "[SESSION] VEMORA detected."
                 )
 
-                command_text = remove_wake_word(
-                    user_text
-                )
+                command_text = (
+                    remove_wake_word(
+                        user_text
+                    )
+                ).strip()
 
-                # ------------------------------------------------
-                # Important:
-                # If the passive speech segment contains VEMORA,
-                # the first segment may contain only the wake word
-                # or the start of the command.
-                #
-                # We therefore listen for another segment so the
-                # user's full command can be captured naturally.
-                # ------------------------------------------------
+                # ==================================================
+                # WAKE WORD ONLY / VERY SHORT COMMAND
+                # ==================================================
 
-                if not command_text:
+                if len(command_text.split()) <= 2:
 
+                    print()
                     print(
-                        "[SESSION] Listening for command..."
+                        "[SESSION] "
+                        "VEMORA is listening for your command..."
                     )
 
                     try:
 
                         command_audio = (
-                            listener.listen_once()
-                        )
-
-                        command_text = (
-                            stt.transcribe(
-                                command_audio
-                            ).strip()
+                            listener.wait_for_speech(
+                                timeout=(
+                                    COMMAND_START_GRACE_PERIOD
+                                )
+                            )
                         )
 
                     except Exception as error:
@@ -437,6 +637,65 @@ def main() -> None:
 
                         continue
 
+                    if command_audio is None:
+
+                        print(
+                            "[SESSION] "
+                            "No command detected."
+                        )
+
+                        continue
+
+                    try:
+
+                        follow_up_text = (
+                            stt.transcribe(
+                                command_audio
+                            ).strip()
+                        )
+
+                    except Exception as error:
+
+                        print(
+                            f"[COMMAND STT] ERROR: {error}"
+                        )
+
+                        print(
+                            "[AUDIO] Keeping failed command "
+                            "segment for debugging."
+                        )
+
+                        continue
+
+                    cleanup_audio_file(
+                        command_audio
+                    )
+
+                    if not follow_up_text:
+
+                        print(
+                            "[SESSION] "
+                            "No command was transcribed."
+                        )
+
+                        continue
+
+                    command_text = follow_up_text
+
+                # ==================================================
+                # DIRECT COMMAND
+                # ==================================================
+
+                command_text = command_text.strip()
+
+                if not command_text:
+
+                    print(
+                        "[SESSION] Empty command."
+                    )
+
+                    continue
+
                 print()
                 print(
                     "[COMMAND]"
@@ -444,8 +703,44 @@ def main() -> None:
                 print(command_text)
 
                 # ------------------------------------------------
-                # Store the direct command in the session too.
+                # Store the direct command once.
                 # ------------------------------------------------
+
+                session.add_transcript(
+                    command_text,
+                    chunk_type="DIRECT_COMMAND",
+                )
+
+                # ==================================================
+                # STOP LISTENING
+                # ==================================================
+
+                normalized_command = (
+                    command_text.lower().strip()
+                )
+
+                if (
+                    "stop listening"
+                    in normalized_command
+                    or "stop the session"
+                    in normalized_command
+                    or "end the session"
+                    in normalized_command
+                ):
+
+                    print()
+                    print(
+                        "[SESSION] Stop command detected."
+                    )
+
+                    session.end()
+
+                    print(
+                        "[VEMORA] Back to IDLE."
+                    )
+
+                    break
+
                 # ==================================================
                 # SESSION CONTEXT
                 # ==================================================
@@ -465,10 +760,22 @@ def main() -> None:
                     "[VEMORA] Creating action plan..."
                 )
 
-                plan = llm.create_action_plan(
-                    user_text=command_text,
-                    session_context=session_context,
-                )
+                try:
+
+                    plan = (
+                        llm.create_action_plan(
+                            user_text=command_text,
+                            session_context=session_context,
+                        )
+                    )
+
+                except Exception as error:
+
+                    print(
+                        f"[AI PLAN] ERROR: {error}"
+                    )
+
+                    continue
 
                 print()
                 print(
@@ -510,7 +817,10 @@ def main() -> None:
                 print(
                     "[TOOL RESULTS]"
                 )
-                print(tool_results)
+
+                print(
+                    tool_results
+                )
 
                 # ==================================================
                 # SHOULD VEMORA SPEAK?
@@ -519,13 +829,14 @@ def main() -> None:
                 if not plan.should_speak:
 
                     print(
-                        "[VEMORA] No spoken response required."
+                        "[VEMORA] "
+                        "No spoken response required."
                     )
 
                     continue
 
                 # ==================================================
-                # FINAL GROUNDED RESPONSE
+                # GROUNDED RESPONSE
                 # ==================================================
 
                 print()
@@ -548,7 +859,7 @@ def main() -> None:
                 except Exception as error:
 
                     print(
-                        f"[AI] ERROR: {error}"
+                        f"[AI RESPONSE] ERROR: {error}"
                     )
 
                     continue
@@ -567,7 +878,10 @@ def main() -> None:
                 print(
                     "VEMORA:"
                 )
-                print(response)
+
+                print(
+                    response
+                )
 
                 # ==================================================
                 # TTS
@@ -590,44 +904,12 @@ def main() -> None:
                         f"[TTS] ERROR: {error}"
                     )
 
+                    continue
+
                 print()
                 print(
                     "[VEMORA] Back to listening."
                 )
-                print()
-
-                # ==================================================
-                # SPECIAL COMMAND:
-                # STOP LISTENING
-                # ==================================================
-
-                normalized_command = (
-                    command_text.lower().strip()
-                )
-
-                if (
-                    "stop listening"
-                    in normalized_command
-                    or "stop the session"
-                    in normalized_command
-                    or "end the session"
-                    in normalized_command
-                ):
-
-                    print()
-                    print(
-                        "[SESSION] Stop command detected."
-                    )
-
-                    session.end()
-
-                    print(
-                        "[VEMORA] Back to IDLE."
-                    )
-
-                    break
-
-            print()
 
         except KeyboardInterrupt:
 
@@ -637,7 +919,6 @@ def main() -> None:
             )
 
             if session.session_id is not None:
-
                 session.end()
 
             break
@@ -648,7 +929,10 @@ def main() -> None:
             print(
                 "[VEMORA] ERROR:"
             )
-            print(error)
+
+            print(
+                error
+            )
 
             print()
             print(
@@ -665,10 +949,15 @@ def main() -> None:
         pass
 
     try:
+        task_scheduler.stop()
+    except Exception:
+        pass
+    
+    try:
         database.close()
     except Exception:
         pass
-
+    
 
 if __name__ == "__main__":
     main()

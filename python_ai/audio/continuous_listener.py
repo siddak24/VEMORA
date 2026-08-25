@@ -12,9 +12,14 @@ import soundfile as sf
 class ContinuousListener:
     """
     Continuously monitors the microphone and captures
-    one speech segment at a time.
+    speech segments automatically.
 
-    This is intentionally separate from AudioRecorder.
+    Passive listening:
+        Uses the normal silence duration (default 0.8s).
+
+    Direct command listening:
+        Can wait for speech for a configurable amount of time
+        after the wake word, e.g. 4 seconds.
 
     AudioRecorder:
         Manual start/stop with Enter.
@@ -44,6 +49,11 @@ class ContinuousListener:
             ),
         )
 
+        self.block_duration = block_duration
+
+        # Normal passive-listening silence threshold.
+        self.silence_duration = silence_duration
+
         self.silence_blocks = max(
             1,
             int(
@@ -52,9 +62,7 @@ class ContinuousListener:
             ),
         )
 
-        self.energy_threshold = (
-            energy_threshold
-        )
+        self.energy_threshold = energy_threshold
 
         self.output_dir = Path(
             output_dir
@@ -89,20 +97,37 @@ class ContinuousListener:
         )
 
     # ==========================================================
-    # CAPTURE ONE SPEECH SEGMENT
+    # INTERNAL AUDIO CAPTURE
     # ==========================================================
 
-    def listen_once(self) -> Path:
+    def _capture_segment(
+        self,
+        silence_duration: float,
+        wait_timeout: float | None = None,
+        output_prefix: str = "segment",
+        status_label: str = "speech",
+    ) -> Path | None:
         """
-        Wait for speech automatically.
+        Internal speech-segment capture.
 
-        Starts recording when the audio energy goes above
-        the threshold and stops after enough consecutive
-        silent blocks.
+        If wait_timeout is provided, the listener will wait only
+        that long for speech to START.
+
+        Once speech starts, it keeps recording until the configured
+        amount of silence is detected.
 
         Returns:
-            Path to the recorded WAV segment.
+            Path to WAV file, or None if speech never started
+            before wait_timeout expired.
         """
+
+        silence_blocks = max(
+            1,
+            int(
+                silence_duration
+                / self.block_duration
+            ),
+        )
 
         print(
             "[LISTENER] Waiting for speech..."
@@ -113,11 +138,13 @@ class ContinuousListener:
 
         chunks: list[np.ndarray] = []
 
-        # Keep a little audio before speech starts so the
-        # first word isn't clipped.
+        # Keep a small amount of audio before speech starts so
+        # the first word does not get clipped.
         pre_buffer: deque[np.ndarray] = deque(
             maxlen=3
         )
+
+        start_time = time.monotonic()
 
         with sd.InputStream(
             samplerate=self.sample_rate,
@@ -127,6 +154,31 @@ class ContinuousListener:
         ) as stream:
 
             while True:
+
+                # --------------------------------------------------
+                # WAIT TIMEOUT
+                # --------------------------------------------------
+
+                if (
+                    wait_timeout is not None
+                    and not speech_started
+                    and (
+                        time.monotonic()
+                        - start_time
+                        >= wait_timeout
+                    )
+                ):
+
+                    print(
+                        "[LISTENER] No speech detected "
+                        f"within {wait_timeout:.1f} seconds."
+                    )
+
+                    return None
+
+                # --------------------------------------------------
+                # READ MICROPHONE
+                # --------------------------------------------------
 
                 audio, _ = stream.read(
                     self.block_size
@@ -177,7 +229,8 @@ class ContinuousListener:
                         pre_buffer.clear()
 
                         print(
-                            "[LISTENER] Speech detected."
+                            f"[LISTENER] "
+                            f"{status_label.capitalize()} detected."
                         )
 
                     continue
@@ -199,12 +252,12 @@ class ContinuousListener:
                     silence_count += 1
 
                 # --------------------------------------------------
-                # END AFTER SILENCE
+                # SPEECH ENDED
                 # --------------------------------------------------
 
                 if (
                     silence_count
-                    >= self.silence_blocks
+                    >= silence_blocks
                 ):
 
                     print(
@@ -215,9 +268,11 @@ class ContinuousListener:
 
         if not chunks:
 
-            raise RuntimeError(
-                "No speech captured."
-            )
+            return None
+
+        # ------------------------------------------------------
+        # COMBINE AUDIO
+        # ------------------------------------------------------
 
         audio_data = np.concatenate(
             chunks,
@@ -230,7 +285,7 @@ class ContinuousListener:
 
         output_path = (
             self.output_dir
-            / f"segment_{timestamp}.wav"
+            / f"{output_prefix}_{timestamp}.wav"
         )
 
         sf.write(
@@ -255,3 +310,99 @@ class ContinuousListener:
         )
 
         return output_path
+
+    # ==========================================================
+    # NORMAL PASSIVE LISTENING
+    # ==========================================================
+
+    def listen_once(
+        self,
+        silence_duration: float | None = None,
+    ) -> Path:
+        """
+        Capture one normal speech segment.
+
+        Default:
+            0.8 seconds of silence ends the segment.
+
+        This is used for passive session listening.
+        """
+
+        active_silence_duration = (
+            silence_duration
+            if silence_duration is not None
+            else self.silence_duration
+        )
+
+        result = self._capture_segment(
+            silence_duration=active_silence_duration,
+            wait_timeout=None,
+            output_prefix="segment",
+            status_label="speech",
+        )
+
+        if result is None:
+
+            raise RuntimeError(
+                "No speech captured."
+            )
+
+        return result
+
+    # ==========================================================
+    # WAIT FOR COMMAND SPEECH
+    # ==========================================================
+
+    def wait_for_speech(
+        self,
+        timeout: float = 4.0,
+        silence_duration: float | None = None,
+    ) -> Path | None:
+        """
+        After VEMORA's wake word is detected, wait for the user
+        to BEGIN speaking for up to `timeout` seconds.
+
+        Example:
+
+            "VEMORA..."
+                 ↓
+              pause 2 sec
+                 ↓
+            "what is my class?"
+
+        This method allows that pause.
+
+        Once speech starts, recording continues until silence.
+
+        Args:
+            timeout:
+                Maximum time to wait for speech to START.
+
+            silence_duration:
+                Silence required AFTER speech has started.
+                Defaults to the normal 0.8 seconds.
+
+        Returns:
+            Path to command WAV, or None if no speech starts
+            within the timeout.
+        """
+
+        active_silence_duration = (
+            silence_duration
+            if silence_duration is not None
+            else self.silence_duration
+        )
+
+        print()
+        print(
+            "[LISTENER] VEMORA is waiting for your command..."
+        )
+
+        result = self._capture_segment(
+            silence_duration=active_silence_duration,
+            wait_timeout=timeout,
+            output_prefix="command",
+            status_label="command speech",
+        )
+
+        return result
