@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+import re
+from datetime import datetime
+
 from ai.action_models import ActionPlan
 from memory.manager import MemoryManager
 from session.manager import SessionManager
 from task.manager import TaskManager
-from datetime import datetime
+
 
 class ActionExecutor:
     """
@@ -49,6 +53,8 @@ class ActionExecutor:
                 "delete_task",
                 "get_current_time",
                 "get_current_date",
+                "get_session_summary",
+                "search_section_summaries",
             }
 
         results: list[dict] = []
@@ -90,6 +96,97 @@ class ActionExecutor:
                 )
 
             # ==================================================
+            # GET WHOLE SESSION SUMMARY
+            # ==================================================
+
+            elif action.tool == "get_session_summary":
+
+                summary = (
+                    self.session.get_session_summary()
+                )
+
+                if summary is None:
+
+                    results.append(
+                        {
+                            "tool": "get_session_summary",
+                            "status": "not_found",
+                            "results": [],
+                        }
+                    )
+
+                else:
+
+                    results.append(
+                        {
+                            "tool": "get_session_summary",
+                            "status": "success",
+                            "results": [
+                                summary
+                            ],
+                        }
+                    )
+
+            # ==================================================
+            # SEARCH SECTION SUMMARIES
+            # ==================================================
+
+            elif action.tool == "search_section_summaries":
+
+                query = (
+                    action.query.strip()
+                )
+
+                if not query:
+
+                    results.append(
+                        {
+                            "tool": "search_section_summaries",
+                            "status": "failed",
+                            "reason": "empty_query",
+                            "results": [],
+                        }
+                    )
+
+                    continue
+
+                summaries = (
+                    self.session
+                    .get_section_summaries()
+                )
+
+                if not summaries:
+
+                    results.append(
+                        {
+                            "tool": "search_section_summaries",
+                            "status": "not_found",
+                            "results": [],
+                        }
+                    )
+
+                    continue
+
+                ranked = (
+                    self._rank_section_summaries(
+                        query=query,
+                        summaries=summaries,
+                    )
+                )
+
+                results.append(
+                    {
+                        "tool": "search_section_summaries",
+                        "status": (
+                            "success"
+                            if ranked
+                            else "no_match"
+                        ),
+                        "results": ranked,
+                    }
+                )
+
+            # ==================================================
             # CURRENT TIME
             # ==================================================
 
@@ -100,12 +197,15 @@ class ActionExecutor:
                 results.append(
                     {
                         "tool": "get_current_time",
-                        "time": now.strftime("%I:%M %p"),
-                        "timezone": now.strftime("%Z"),
+                        "time": now.strftime(
+                            "%I:%M %p"
+                        ),
+                        "timezone": now.strftime(
+                            "%Z"
+                        ),
                         "status": "success",
                     }
                 )
-
 
             # ==================================================
             # CURRENT DATE
@@ -118,11 +218,13 @@ class ActionExecutor:
                 results.append(
                     {
                         "tool": "get_current_date",
-                        "date": now.strftime("%A, %d %B %Y"),
+                        "date": now.strftime(
+                            "%A, %d %B %Y"
+                        ),
                         "status": "success",
                     }
                 )
-            
+
             # ==================================================
             # LONG-TERM MEMORY SEARCH
             # ==================================================
@@ -354,6 +456,7 @@ class ActionExecutor:
                         "status": "created",
                     }
                 )
+
             # ==================================================
             # SEARCH TASK
             # ==================================================
@@ -499,3 +602,171 @@ class ActionExecutor:
                 )
 
         return results
+
+    # ==========================================================
+    # RANK SECTION SUMMARIES
+    # ==========================================================
+
+    @staticmethod
+    def _rank_section_summaries(
+        query: str,
+        summaries: list[dict],
+    ) -> list[dict]:
+        """
+        First-pass section-summary retrieval.
+
+        The stored section content is JSON generated by
+        SessionSummary/SectionSummary. We parse that JSON
+        and search its actual semantic fields rather than
+        searching raw JSON punctuation.
+
+        This will later be replaced with embedding-based
+        retrieval for section summaries.
+        """
+
+        query_words = {
+            word.lower()
+            for word in re.findall(
+                r"[A-Za-z0-9]+",
+                query,
+            )
+            if len(word) > 2
+        }
+
+        ranked: list[dict] = []
+
+        for summary in summaries:
+
+            content = (
+                summary.get("content")
+                or ""
+            )
+
+            searchable_text = (
+                ActionExecutor
+                ._extract_summary_text(
+                    content
+                )
+            )
+
+            content_words = {
+                word.lower()
+                for word in re.findall(
+                    r"[A-Za-z0-9]+",
+                    searchable_text,
+                )
+                if len(word) > 2
+            }
+
+            matched_words = (
+                query_words
+                & content_words
+            )
+
+            score = len(
+                matched_words
+            )
+
+            item = dict(summary)
+
+            item["match_score"] = score
+
+            if matched_words:
+
+                item["matched_words"] = sorted(
+                    matched_words
+                )
+
+                ranked.append(
+                    item
+                )
+
+        # ------------------------------------------------------
+        # Higher lexical match first.
+        # Earlier sections first for ties so chronology
+        # remains stable.
+        # ------------------------------------------------------
+
+        ranked.sort(
+            key=lambda item: (
+                item["match_score"],
+                item.get("start_time") or "",
+            ),
+            reverse=True,
+        )
+
+        return ranked[:5]
+
+    # ==========================================================
+    # EXTRACT SEARCHABLE SUMMARY TEXT
+    # ==========================================================
+
+    @staticmethod
+    def _extract_summary_text(
+        content: str,
+    ) -> str:
+        """
+        Convert stored SectionSummary JSON into searchable
+        natural-language text.
+        """
+
+        try:
+
+            parsed = json.loads(
+                content
+            )
+
+            if isinstance(
+                parsed,
+                dict,
+            ):
+
+                parts: list[str] = []
+
+                summary = parsed.get(
+                    "summary"
+                )
+
+                if isinstance(
+                    summary,
+                    str,
+                ):
+
+                    parts.append(
+                        summary
+                    )
+
+                for field in (
+                    "key_points",
+                    "entities",
+                    "important_events",
+                    "people",
+                    "topics",
+                ):
+
+                    values = parsed.get(
+                        field
+                    )
+
+                    if isinstance(
+                        values,
+                        list,
+                    ):
+
+                        parts.extend(
+                            str(value)
+                            for value in values
+                        )
+
+                return " ".join(
+                    parts
+                )
+
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ):
+            pass
+
+        return content

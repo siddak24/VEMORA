@@ -24,6 +24,21 @@ from session.processor import SessionProcessor
 
 from task.manager import TaskManager
 from task.scheduler import TaskScheduler
+from session.manager import SessionManager
+from session.processor import SessionProcessor
+from conversation.manager import ConversationManager
+
+from session.section_manager import (
+    SessionSectionManager,
+)
+
+from session.section_processor import (
+    SectionProcessor,
+)
+
+from session.summarizer import (
+    SessionSummarizer,
+)
 
 
 load_dotenv()
@@ -42,6 +57,12 @@ WAKE_WORD_VARIANTS = {
     "vimura",
     "vemuro",
     "vimuro",
+    "demora",
+    "demura",
+    "dimora",
+    "dimura",
+    "demuro",
+    "dimuro",
 }
 
 PASSIVE_SILENCE_DURATION = 0.8
@@ -301,6 +322,23 @@ def main() -> None:
     )
 
     # ==========================================================
+    # SESSION SECTION MEMORY
+    # ==========================================================
+
+    section_manager = SessionSectionManager(
+        database=database,
+    )
+
+    section_summarizer = SessionSummarizer(
+        llm=llm,
+    )
+
+    section_processor = SectionProcessor(
+        database=database,
+        section_manager=section_manager,
+        summarizer=section_summarizer,
+    )
+    # ==========================================================
     # LONG-TERM MEMORY
     # ==========================================================
 
@@ -425,6 +463,7 @@ def main() -> None:
                                 "Pending passive data "
                                 "remains unprocessed."
                             )
+                    section_processor.stop(finalize=True)
 
                     session.end()
 
@@ -471,6 +510,10 @@ def main() -> None:
 
             session.start(
                 session_type="conversation",
+            )
+            section_processor.start(
+                session_id=session.session_id,
+                start_time=session._now(),
             )
 
             print()
@@ -583,6 +626,7 @@ def main() -> None:
                 print(
                     user_text
                 )
+                section_processor.check()
 
                 # ------------------------------------------------
                 # WAKE WORD DETECTION
@@ -979,6 +1023,9 @@ def main() -> None:
                             "[SESSION] "
                             "Stop command detected."
                         )
+                        section_processor.stop(
+                            finalize=True
+                        )
 
                         session.end()
 
@@ -1239,7 +1286,7 @@ RECENT DIRECT CONVERSATION:
                 session.session_id
                 is not None
             ):
-
+                section_processor.stop(finalize=True)
                 session.end()
 
             break

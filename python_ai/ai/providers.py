@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import os
+import re
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from ai.action_models import ActionPlan
-from memory.models import MemoryDecision
-from session.decision import SessionDecision
 from ai.action_models import (
     ActionPlan,
     FollowUpDecision,
 )
+from memory.models import MemoryDecision
+from session.decision import SessionDecision
 
 load_dotenv()
 
@@ -66,54 +66,8 @@ class DemoProvider:
         user_text: str,
         conversation_context: str,
     ) -> bool:
-        """
-        Decide whether the user's new utterance is a
-        follow-up to the recent direct VEMORA conversation.
-        """
 
-        prompt = f"""
-    You are VEMORA's conversation-state classifier.
-
-    Determine whether the user's new utterance is a natural
-    follow-up to the recent direct conversation with VEMORA.
-
-    Return structured JSON.
-
-    Rules:
-
-    - A follow-up may refer to something from the previous
-    VEMORA answer using words such as:
-    "it", "that", "there", "who", "when", "what about",
-    "and where", "and when", etc.
-
-    - A short question that clearly continues the previous
-    topic is a follow-up.
-
-    - An unrelated statement or conversation is NOT a follow-up.
-
-    - Do not assume every short utterance is a follow-up.
-
-    Recent direct conversation:
-    {conversation_context}
-
-    New user utterance:
-    {user_text}
-    """
-
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=FollowUpDecision,
-            ),
-        )
-
-        decision = FollowUpDecision.model_validate_json(
-            response.text
-        )
-
-        return decision.is_follow_up
+        return False
 
     def create_action_plan(
         self,
@@ -339,6 +293,102 @@ Current utterance:
         )
 
     # ==========================================================
+    # FOLLOW-UP DETECTION
+    # ==========================================================
+
+    def decide_follow_up(
+        self,
+        user_text: str,
+        conversation_context: str,
+    ) -> bool:
+        """
+        Determine whether a no-wake-word utterance is
+        a continuation of the recent VEMORA conversation.
+        """
+
+        prompt = f"""
+You are VEMORA's conversation-state classifier.
+
+Determine whether the user's NEW utterance is a
+follow-up to the recent direct conversation with VEMORA.
+
+Return only the structured FollowUpDecision.
+
+Rules:
+
+- A follow-up may refer to something from the previous
+  VEMORA answer using:
+  "it", "that", "there", "this", "those",
+  "who", "when", "where", "why", "how",
+  "what about", "and where", "and when",
+  "and what", etc.
+
+- A short question that naturally continues the previous
+  topic is a follow-up.
+
+- Questions beginning with "and", "also", "what about",
+  "where", "when", "who", "why", or "how" can be
+  follow-ups when the previous conversation provides
+  a clear topic.
+
+- The following is a follow-up example:
+
+  Previous:
+  VEMORA: It is 02:41 PM.
+
+  New:
+  "And what day is it today?"
+
+  This MUST be classified as true.
+
+- Another example:
+
+  Previous:
+  VEMORA: Your class is tomorrow at 8 AM.
+
+  New:
+  "And where is it?"
+
+  This MUST be classified as true.
+
+- Another example:
+
+  Previous:
+  VEMORA: The narrator and Gip entered the magic shop.
+
+  New:
+  "What happened next?"
+
+  This SHOULD be classified as true.
+
+- An unrelated statement or conversation is NOT a
+  follow-up.
+
+- Do not classify every short utterance as a follow-up.
+
+Recent direct conversation:
+{conversation_context}
+
+New user utterance:
+{user_text}
+"""
+
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=FollowUpDecision,
+            ),
+        )
+
+        decision = FollowUpDecision.model_validate_json(
+            response.text
+        )
+
+        return decision.is_follow_up
+
+    # ==========================================================
     # PASSIVE SESSION PROCESSING
     # ==========================================================
 
@@ -349,14 +399,12 @@ Current utterance:
         """
         Analyze passive session speech.
 
-        The user is not directly asking VEMORA
-        for a spoken response.
-
-        The model may:
+        Passive processing may:
             - save useful memories
             - update memories
             - delete memories when explicitly requested
             - create tasks
+            - complete tasks
 
         It must never speak.
         """
@@ -374,44 +422,29 @@ Your job is to identify information that should
 be acted on silently.
 
 - If the user says they completed, submitted, finished,
-sent, paid, attended, or otherwise completed something
-that clearly corresponds to an existing task, use
-complete_task.
+  sent, paid, attended, or otherwise completed something
+  that clearly corresponds to an existing task, use
+  complete_task.
 
 - For complete_task, provide a useful query describing
-the completed task.
+  the completed task.
 
 - Do not mark a task completed unless the transcript
-clearly indicates completion.
+  clearly indicates completion.
 
 Available tools:
 
 1. save_memory
-   Save useful information that may matter later.
-
 2. update_memory
-   Update an existing long-term memory when the
-   transcript clearly corrects existing information.
-
 3. delete_memory
-   Delete a memory only when the user explicitly
-   asks VEMORA to forget something.
-
 4. create_task
-   Create a task when the user expresses an action,
-   obligation, or reminder that they need to perform.
-
 5. complete_task
-   Mark an existing task as completed when the user
-   indicates that they have finished an outstanding task.
 
 Do NOT use:
 - search_session
 - search_memory
 - search_task
 - delete_task
-
-from passive processing.
 
 Task vs event rules:
 
@@ -431,7 +464,6 @@ Task vs event rules:
 
 - An event represents something that happens to
   the user.
-
 
 Memory rules:
 
@@ -472,11 +504,11 @@ Transcript:
             response.text
         )
 
-        # Safety rule: passive processing never speaks.
+        # Safety rule:
+        # passive processing never speaks.
         plan.should_speak = False
 
         return plan
-
 
     # ==========================================================
     # DIRECT ACTION PLANNER
@@ -494,10 +526,11 @@ You are VEMORA, a wearable AI assistant.
 Your job is to decide which tools are needed
 to answer the user's request.
 
-Available tools:
+AVAILABLE TOOLS:
 
 1. search_session
-   Search the current active session.
+   Search raw transcript chunks from the current session.
+   Use for exact or highly specific details.
 
 2. search_memory
    Search persistent long-term memory.
@@ -529,14 +562,145 @@ Available tools:
 11. get_current_date
     Use when the user asks what day/date it is.
 
-Time rules:
+12. get_session_summary
+    Retrieve the already-generated summary of the ENTIRE
+    current session.
+
+13. search_section_summaries
+    Search summaries representing portions of the
+    current session.
+
+============================================================
+HIERARCHICAL SESSION RETRIEVAL
+============================================================
+
+VEMORA has THREE levels of session information:
+
+LEVEL 1:
+search_session
+    Raw transcript.
+    Best for exact or very specific details.
+
+LEVEL 2:
+search_section_summaries
+    Summaries of portions of the session.
+    Best for broad topics, events, or parts of a
+    long session.
+
+LEVEL 3:
+get_session_summary
+    Summary of the ENTIRE session.
+    Best for whole-session questions.
+
+============================================================
+WHOLE-SESSION QUESTIONS
+============================================================
+
+If the user asks to summarize, recap, overview, explain,
+or describe the ENTIRE current session/story/lecture/
+meeting/seminar, use:
+
+    get_session_summary
+
+Examples:
+
+- "Summarize the story."
+- "Summarize the entire story."
+- "Can you summarize it?"
+- "I said summarize the story."
+- "Give me a summary."
+- "Give me an overview."
+- "Tell me what happened in the whole story."
+- "What was the lecture about?"
+- "Give me a recap of everything."
+- "Tell me the main points of the meeting."
+
+These MUST be treated as whole-session requests.
+
+DO NOT use search_session merely because the word
+"story" or "summary" appears in the request.
+
+For example:
+
+"I said summarize the story."
+
+must use:
+
+get_session_summary
+
+not:
+
+search_session.
+
+============================================================
+SECTION-LEVEL QUESTIONS
+============================================================
+
+Use search_section_summaries when the user asks about:
+
+- a broad topic
+- a part of the story
+- an event or sequence of events
+- an earlier or later part of the session
+- a general topic discussed during the session
+
+Examples:
+
+- "What happened in the middle?"
+- "What happened in the first part?"
+- "What happened after they entered the shop?"
+- "What was discussed about the project?"
+- "What did the professor say about databases?"
+
+============================================================
+RAW TRANSCRIPT QUESTIONS
+============================================================
+
+Use search_session for:
+
+- exact wording
+- exact names
+- exact statements
+- very specific details
+- precise moments
+
+Examples:
+
+- "What exactly did the shopman say?"
+- "What was written on the package?"
+- "What exact name was mentioned?"
+- "What did he say about the rabbit?"
+
+============================================================
+RETRIEVAL PRIORITY
+============================================================
+
+Whole-session request:
+    get_session_summary
+
+Broad topic/section request:
+    search_section_summaries
+
+Specific fact/detail:
+    search_session
+
+You may use more than one retrieval tool when necessary.
+
+Never treat the user's questions to VEMORA as facts
+about the session content.
+
+============================================================
+TIME RULES
+============================================================
 
 - Never guess the current time or date.
 - For current time, use get_current_time.
 - For current date/day, use get_current_date.
-- These tools should be preferred over general model knowledge.
+- Prefer these tools over general model knowledge.
 
-Task rules:
+============================================================
+TASK RULES
+============================================================
 
 - "I have a presentation on Monday" is normally
   an EVENT or memory, not a task.
@@ -565,37 +729,30 @@ Task rules:
 
 - Do not create duplicate tasks unnecessarily.
 
-Memory rules:
+============================================================
+MEMORY RULES
+============================================================
 
 - Use save_memory only when persistent information
   is genuinely useful.
+
 - Use update_memory when the user is correcting
   something already remembered.
+
 - Use delete_memory when the user explicitly asks
   VEMORA to forget something.
 
-Retrieval rules:
-
-- Use search_session when the answer may exist in
-  the current session.
-- Use search_memory when the answer may exist in
-  long-term memory.
-- You may request both searches when the source is unclear.
 - Do not invent information.
 
-For task dates:
-
-- When an exact date/time is known, provide due_at in ISO format:
-  YYYY-MM-DDTHH:MM:SS
-
-- Do not use "10 PM" when an absolute date/time can be determined.
-- Do not invent the date if it is unknown.
-
-Response rules:
+============================================================
+RESPONSE RULES
+============================================================
 
 - If the user directly asks VEMORA something,
   should_speak should normally be true.
+
 - Keep the action plan minimal.
+
 - Only request tools that are actually useful.
 
 For create_task:
@@ -628,63 +785,128 @@ User request:
             ),
         )
 
-        return ActionPlan.model_validate_json(
+        plan = ActionPlan.model_validate_json(
             response.text
         )
 
-    def decide_follow_up(
-            self,
-            user_text: str,
-            conversation_context: str,
-        ) -> bool:
-            """
-            Decide whether the user's new utterance is a
-            follow-up to the recent direct VEMORA conversation.
-            """
-    
-            prompt = f"""
-        You are VEMORA's conversation-state classifier.
-    
-        Determine whether the user's new utterance is a natural
-        follow-up to the recent direct conversation with VEMORA.
-    
-        Return structured JSON.
-    
-        Rules:
-    
-        - A follow-up may refer to something from the previous
-        VEMORA answer using words such as:
-        "it", "that", "there", "who", "when", "what about",
-        "and where", "and when", etc.
-    
-        - A short question that clearly continues the previous
-        topic is a follow-up.
-    
-        - An unrelated statement or conversation is NOT a follow-up.
-    
-        - Do not assume every short utterance is a follow-up.
-    
-        Recent direct conversation:
-        {conversation_context}
-    
-        New user utterance:
-        {user_text}
+        # ------------------------------------------------------
+        # Safety/consistency normalization.
+        #
+        # Gemini should choose the correct tool itself, but
+        # whole-session summary requests are unambiguous enough
+        # that we can enforce the correct retrieval level.
+        # ------------------------------------------------------
+
+        if self._is_whole_session_summary_request(
+            user_text
+        ):
+
+            for action in plan.actions:
+
+                if action.tool == "search_session":
+
+                    action.tool = (
+                        "get_session_summary"
+                    )
+
+                    action.query = ""
+
+        return plan
+
+    # ==========================================================
+    # WHOLE-SESSION SUMMARY DETECTOR
+    # ==========================================================
+
+    @staticmethod
+    def _is_whole_session_summary_request(
+        user_text: str,
+    ) -> bool:
         """
-    
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=FollowUpDecision,
-                ),
+        Detect clearly stated whole-session summary requests.
+
+        This is intentionally conservative.
+        It is a safety net for obvious summary requests,
+        not a replacement for the planner.
+        """
+
+        text = (
+            user_text
+            .strip()
+            .lower()
+        )
+
+        text = re.sub(
+            r"\s+",
+            " ",
+            text,
+        )
+
+        summary_phrases = (
+            "summarize the story",
+            "summarise the story",
+            "summary of the story",
+            "summarize this story",
+            "summarise this story",
+            "summarize the entire story",
+            "summarise the entire story",
+            "summarize the whole story",
+            "summarise the whole story",
+            "summarize the session",
+            "summarise the session",
+            "summary of the session",
+            "summarize the entire session",
+            "summarise the entire session",
+            "summarize the whole session",
+            "summarise the whole session",
+            "summarize this",
+            "summarise this",
+            "give me a summary",
+            "give me the summary",
+            "give me an overview",
+            "give me a recap",
+            "recap the story",
+            "recap this story",
+            "tell me the whole story",
+        )
+
+        if any(
+            phrase in text
+            for phrase in summary_phrases
+        ):
+
+            return True
+
+        # Conversational forms such as:
+        # "I said summarize the story."
+        if (
+            (
+                "i said"
+                in text
+                or
+                "i asked"
+                in text
             )
-    
-            decision = FollowUpDecision.model_validate_json(
-                response.text
+            and
+            (
+                "summarize"
+                in text
+                or
+                "summarise"
+                in text
             )
-    
-            return decision.is_follow_up
+            and
+            (
+                "story"
+                in text
+                or
+                "session"
+                in text
+            )
+        ):
+
+            return True
+
+        return False
 
     # ==========================================================
     # GROUNDED RESPONSE
@@ -713,6 +935,7 @@ Instructions:
 {instruction}
 
 Rules:
+
 - Do not invent information.
 - If the evidence is insufficient, say so.
 - Keep the answer concise.
@@ -749,7 +972,6 @@ Response rules:
 - Keep the answer SHORT and concise.
 - Normally use 1 to 3 sentences.
 - Give the most important information first.
-- Do not add unnecessary background or explanations.
 - Do not repeat the user's question.
 - For simple factual questions, answer in 1 sentence.
 - Only give a long or detailed answer when the user
@@ -775,6 +997,7 @@ User:
 # ==============================================================
 
 def create_llm_provider():
+
     demo_mode = (
         os.getenv(
             "DEMO_MODE",
