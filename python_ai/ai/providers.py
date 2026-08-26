@@ -9,7 +9,10 @@ from google.genai import types
 from ai.action_models import ActionPlan
 from memory.models import MemoryDecision
 from session.decision import SessionDecision
-
+from ai.action_models import (
+    ActionPlan,
+    FollowUpDecision,
+)
 
 load_dotenv()
 
@@ -57,6 +60,60 @@ class DemoProvider:
             action="LISTEN",
             should_speak=False,
         )
+
+    def decide_follow_up(
+        self,
+        user_text: str,
+        conversation_context: str,
+    ) -> bool:
+        """
+        Decide whether the user's new utterance is a
+        follow-up to the recent direct VEMORA conversation.
+        """
+
+        prompt = f"""
+    You are VEMORA's conversation-state classifier.
+
+    Determine whether the user's new utterance is a natural
+    follow-up to the recent direct conversation with VEMORA.
+
+    Return structured JSON.
+
+    Rules:
+
+    - A follow-up may refer to something from the previous
+    VEMORA answer using words such as:
+    "it", "that", "there", "who", "when", "what about",
+    "and where", "and when", etc.
+
+    - A short question that clearly continues the previous
+    topic is a follow-up.
+
+    - An unrelated statement or conversation is NOT a follow-up.
+
+    - Do not assume every short utterance is a follow-up.
+
+    Recent direct conversation:
+    {conversation_context}
+
+    New user utterance:
+    {user_text}
+    """
+
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=FollowUpDecision,
+            ),
+        )
+
+        decision = FollowUpDecision.model_validate_json(
+            response.text
+        )
+
+        return decision.is_follow_up
 
     def create_action_plan(
         self,
@@ -420,6 +477,7 @@ Transcript:
 
         return plan
 
+
     # ==========================================================
     # DIRECT ACTION PLANNER
     # ==========================================================
@@ -573,6 +631,60 @@ User request:
         return ActionPlan.model_validate_json(
             response.text
         )
+
+    def decide_follow_up(
+            self,
+            user_text: str,
+            conversation_context: str,
+        ) -> bool:
+            """
+            Decide whether the user's new utterance is a
+            follow-up to the recent direct VEMORA conversation.
+            """
+    
+            prompt = f"""
+        You are VEMORA's conversation-state classifier.
+    
+        Determine whether the user's new utterance is a natural
+        follow-up to the recent direct conversation with VEMORA.
+    
+        Return structured JSON.
+    
+        Rules:
+    
+        - A follow-up may refer to something from the previous
+        VEMORA answer using words such as:
+        "it", "that", "there", "who", "when", "what about",
+        "and where", "and when", etc.
+    
+        - A short question that clearly continues the previous
+        topic is a follow-up.
+    
+        - An unrelated statement or conversation is NOT a follow-up.
+    
+        - Do not assume every short utterance is a follow-up.
+    
+        Recent direct conversation:
+        {conversation_context}
+    
+        New user utterance:
+        {user_text}
+        """
+    
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=FollowUpDecision,
+                ),
+            )
+    
+            decision = FollowUpDecision.model_validate_json(
+                response.text
+            )
+    
+            return decision.is_follow_up
 
     # ==========================================================
     # GROUNDED RESPONSE

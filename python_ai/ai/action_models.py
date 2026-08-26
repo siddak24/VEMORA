@@ -88,3 +88,6 @@ class ActionPlan(BaseModel):
         "Answer the user concisely using "
         "the available evidence."
     )
+
+class FollowUpDecision(BaseModel):
+    is_follow_up: bool = False
