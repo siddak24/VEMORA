@@ -124,7 +124,6 @@ class GeminiProvider:
         )
 
         if not api_key:
-
             raise RuntimeError(
                 "GEMINI_API_KEY is missing from .env"
             )
@@ -301,10 +300,6 @@ Current utterance:
         user_text: str,
         conversation_context: str,
     ) -> bool:
-        """
-        Determine whether a no-wake-word utterance is
-        a continuation of the recent VEMORA conversation.
-        """
 
         prompt = f"""
 You are VEMORA's conversation-state classifier.
@@ -331,35 +326,31 @@ Rules:
   follow-ups when the previous conversation provides
   a clear topic.
 
-- The following is a follow-up example:
+Examples:
 
-  Previous:
-  VEMORA: It is 02:41 PM.
+Previous:
+VEMORA: It is 02:41 PM.
 
-  New:
-  "And what day is it today?"
+New:
+"And what day is it today?"
 
-  This MUST be classified as true.
+This is TRUE.
 
-- Another example:
+Previous:
+VEMORA: Your class is tomorrow at 8 AM.
 
-  Previous:
-  VEMORA: Your class is tomorrow at 8 AM.
+New:
+"And where is it?"
 
-  New:
-  "And where is it?"
+This is TRUE.
 
-  This MUST be classified as true.
+Previous:
+VEMORA: The narrator and Gip entered the magic shop.
 
-- Another example:
+New:
+"What happened next?"
 
-  Previous:
-  VEMORA: The narrator and Gip entered the magic shop.
-
-  New:
-  "What happened next?"
-
-  This SHOULD be classified as true.
+This is TRUE.
 
 - An unrelated statement or conversation is NOT a
   follow-up.
@@ -396,18 +387,6 @@ New user utterance:
         self,
         transcript_batch: str,
     ) -> ActionPlan:
-        """
-        Analyze passive session speech.
-
-        Passive processing may:
-            - save useful memories
-            - update memories
-            - delete memories when explicitly requested
-            - create tasks
-            - complete tasks
-
-        It must never speak.
-        """
 
         prompt = f"""
 You are VEMORA's passive-session processor.
@@ -425,12 +404,6 @@ be acted on silently.
   sent, paid, attended, or otherwise completed something
   that clearly corresponds to an existing task, use
   complete_task.
-
-- For complete_task, provide a useful query describing
-  the completed task.
-
-- Do not mark a task completed unless the transcript
-  clearly indicates completion.
 
 Available tools:
 
@@ -459,11 +432,6 @@ Task vs event rules:
 
 - "Remind me to call Rahul tomorrow."
   This is a TASK.
-
-- A task represents something the user needs to do.
-
-- An event represents something that happens to
-  the user.
 
 Memory rules:
 
@@ -504,8 +472,6 @@ Transcript:
             response.text
         )
 
-        # Safety rule:
-        # passive processing never speaks.
         plan.should_speak = False
 
         return plan
@@ -574,7 +540,7 @@ AVAILABLE TOOLS:
 HIERARCHICAL SESSION RETRIEVAL
 ============================================================
 
-VEMORA has THREE levels of session information:
+VEMORA has three levels of session information:
 
 LEVEL 1:
 search_session
@@ -596,64 +562,50 @@ get_session_summary
 WHOLE-SESSION QUESTIONS
 ============================================================
 
-If the user asks to summarize, recap, overview, explain,
-or describe the ENTIRE current session/story/lecture/
-meeting/seminar, use:
+If the user asks to summarize, recap, overview,
+or describe the ENTIRE current story/session/
+lecture/meeting/seminar, use:
 
-    get_session_summary
+get_session_summary
 
 Examples:
 
 - "Summarize the story."
+- "Summarize me the story."
 - "Summarize the entire story."
+- "Can you summarize the story?"
 - "Can you summarize it?"
-- "I said summarize the story."
 - "Give me a summary."
 - "Give me an overview."
-- "Tell me what happened in the whole story."
-- "What was the lecture about?"
-- "Give me a recap of everything."
-- "Tell me the main points of the meeting."
+- "Give me an overview of the entire story."
+- "Give me a recap."
+- "Tell me the whole story."
+- "What happened in the whole story?"
 
-These MUST be treated as whole-session requests.
+These are WHOLE-SESSION requests.
 
-DO NOT use search_session merely because the word
-"story" or "summary" appears in the request.
+DO NOT use:
+- search_task
+- search_memory
+- search_session
 
-For example:
-
-"I said summarize the story."
-
-must use:
-
-get_session_summary
-
-not:
-
-search_session.
+for a whole-session summary when the session
+summary tool is available.
 
 ============================================================
-SECTION-LEVEL QUESTIONS
+SECTION QUESTIONS
 ============================================================
 
-Use search_section_summaries when the user asks about:
-
-- a broad topic
-- a part of the story
-- an event or sequence of events
-- an earlier or later part of the session
-- a general topic discussed during the session
-
-Examples:
+Use search_section_summaries for:
 
 - "What happened in the middle?"
 - "What happened in the first part?"
+- "What happened near the end?"
 - "What happened after they entered the shop?"
 - "What was discussed about the project?"
-- "What did the professor say about databases?"
 
 ============================================================
-RAW TRANSCRIPT QUESTIONS
+RAW DETAIL QUESTIONS
 ============================================================
 
 Use search_session for:
@@ -661,7 +613,7 @@ Use search_session for:
 - exact wording
 - exact names
 - exact statements
-- very specific details
+- specific details
 - precise moments
 
 Examples:
@@ -669,105 +621,23 @@ Examples:
 - "What exactly did the shopman say?"
 - "What was written on the package?"
 - "What exact name was mentioned?"
-- "What did he say about the rabbit?"
 
 ============================================================
-RETRIEVAL PRIORITY
+IMPORTANT
 ============================================================
 
-Whole-session request:
-    get_session_summary
+NEVER use search_task for a question about:
+- a story
+- a lecture
+- a meeting
+- a seminar
+- the current session
 
-Broad topic/section request:
-    search_section_summaries
+unless the user is explicitly asking about a task.
 
-Specific fact/detail:
-    search_session
-
-You may use more than one retrieval tool when necessary.
-
-Never treat the user's questions to VEMORA as facts
-about the session content.
-
-============================================================
-TIME RULES
-============================================================
-
-- Never guess the current time or date.
-- For current time, use get_current_time.
-- For current date/day, use get_current_date.
-- Prefer these tools over general model knowledge.
-
-============================================================
-TASK RULES
-============================================================
-
-- "I have a presentation on Monday" is normally
-  an EVENT or memory, not a task.
-
-- "I need to prepare my presentation by Monday"
-  is a TASK.
-
-- "Remind me to prepare my presentation by Monday"
-  is a TASK.
-
-- "I need to submit my assignment by Friday"
-  is a TASK.
-
-- A task represents an action the user needs to perform.
-
-- An event represents something that happens to the user.
-
-- Use create_task only when the user expresses an
-  action, obligation, or reminder.
-
-- Use complete_task when the user says they finished
-  an existing task.
-
-- Use search_task before completing or deleting a task
-  when the task ID is not known.
-
-- Do not create duplicate tasks unnecessarily.
-
-============================================================
-MEMORY RULES
-============================================================
-
-- Use save_memory only when persistent information
-  is genuinely useful.
-
-- Use update_memory when the user is correcting
-  something already remembered.
-
-- Use delete_memory when the user explicitly asks
-  VEMORA to forget something.
-
-- Do not invent information.
-
-============================================================
-RESPONSE RULES
-============================================================
-
-- If the user directly asks VEMORA something,
-  should_speak should normally be true.
-
-- Keep the action plan minimal.
-
-- Only request tools that are actually useful.
-
-For create_task:
-- title
-- description
-- due_at
-- expires_at
-
-For complete_task:
-- task_id if known
-- otherwise query
-
-For delete_task:
-- task_id if known
-- otherwise query
+NEVER return an empty action list if the user clearly
+asks VEMORA to retrieve or summarize current session
+information.
 
 Current session context:
 {session_context}
@@ -789,44 +659,54 @@ User request:
             response.text
         )
 
-        # ------------------------------------------------------
-        # Safety/consistency normalization.
+        # ======================================================
+        # DETERMINISTIC SESSION RETRIEVAL SAFEGUARD
+        # ======================================================
         #
-        # Gemini should choose the correct tool itself, but
-        # whole-session summary requests are unambiguous enough
-        # that we can enforce the correct retrieval level.
-        # ------------------------------------------------------
+        # Gemini is still the planner, but obvious retrieval
+        # requests are enforced here so a bad tool choice cannot
+        # send the request to search_task or produce no action.
+        # ======================================================
 
-        if self._is_whole_session_summary_request(
-            user_text
-        ):
+        retrieval_intent = (
+            self._classify_session_retrieval_intent(
+                user_text
+            )
+        )
 
-            for action in plan.actions:
+        if retrieval_intent == "SESSION_SUMMARY":
 
-                if action.tool == "search_session":
+            plan = self._force_retrieval_plan(
+                original_plan=plan,
+                tool="get_session_summary",
+                query="",
+            )
 
-                    action.tool = (
-                        "get_session_summary"
-                    )
+        elif retrieval_intent == "SECTION_SUMMARY":
 
-                    action.query = ""
+            plan = self._force_retrieval_plan(
+                original_plan=plan,
+                tool="search_section_summaries",
+                query=user_text,
+            )
 
         return plan
 
     # ==========================================================
-    # WHOLE-SESSION SUMMARY DETECTOR
+    # CLASSIFY SESSION RETRIEVAL INTENT
     # ==========================================================
 
     @staticmethod
-    def _is_whole_session_summary_request(
+    def _classify_session_retrieval_intent(
         user_text: str,
-    ) -> bool:
+    ) -> str | None:
         """
-        Detect clearly stated whole-session summary requests.
+        Deterministically identify obvious retrieval requests.
 
-        This is intentionally conservative.
-        It is a safety net for obvious summary requests,
-        not a replacement for the planner.
+        Returns:
+            SESSION_SUMMARY
+            SECTION_SUMMARY
+            None
         """
 
         text = (
@@ -841,72 +721,189 @@ User request:
             text,
         )
 
-        summary_phrases = (
+        # ------------------------------------------------------
+        # Whole-session summary patterns.
+        # ------------------------------------------------------
+
+        whole_session_patterns = (
             "summarize the story",
             "summarise the story",
-            "summary of the story",
+            "summarize me the story",
+            "summarise me the story",
             "summarize this story",
             "summarise this story",
+            "summarize me this story",
+            "summarise me this story",
             "summarize the entire story",
             "summarise the entire story",
             "summarize the whole story",
             "summarise the whole story",
+
             "summarize the session",
             "summarise the session",
-            "summary of the session",
             "summarize the entire session",
             "summarise the entire session",
             "summarize the whole session",
             "summarise the whole session",
-            "summarize this",
-            "summarise this",
+
+            "summary of the story",
+            "summary of this story",
+            "summary of the session",
+
             "give me a summary",
             "give me the summary",
+
             "give me an overview",
+            "give me the overview",
+            "give me an overview of the story",
+            "give me an overview of the entire story",
+            "give me an overview of this story",
+            "give me an overview of the session",
+
             "give me a recap",
+            "give me the recap",
             "recap the story",
             "recap this story",
+            "recap the session",
+
             "tell me the whole story",
+            "tell me about the whole story",
+            "tell me what happened in the whole story",
+            "what happened in the whole story",
         )
 
         if any(
             phrase in text
-            for phrase in summary_phrases
+            for phrase in whole_session_patterns
         ):
 
-            return True
+            return "SESSION_SUMMARY"
 
-        # Conversational forms such as:
-        # "I said summarize the story."
+        # ------------------------------------------------------
+        # Conversational forms.
+        # ------------------------------------------------------
+
         if (
             (
-                "i said"
-                in text
-                or
-                "i asked"
-                in text
+                "i said" in text
+                or "i asked" in text
             )
-            and
-            (
-                "summarize"
-                in text
-                or
-                "summarise"
-                in text
+            and (
+                "summarize" in text
+                or "summarise" in text
+                or "summary" in text
             )
-            and
-            (
-                "story"
-                in text
-                or
-                "session"
-                in text
+            and (
+                "story" in text
+                or "session" in text
+                or "lecture" in text
+                or "meeting" in text
+                or "seminar" in text
             )
         ):
 
-            return True
+            return "SESSION_SUMMARY"
 
-        return False
+        # ------------------------------------------------------
+        # Short conversational summary requests referring
+        # to recent context.
+        # ------------------------------------------------------
+
+        if (
+            (
+                "summarize it" in text
+                or "summarise it" in text
+                or "summarize this" in text
+                or "summarise this" in text
+            )
+        ):
+
+            return "SESSION_SUMMARY"
+
+        # ------------------------------------------------------
+        # Section-level questions.
+        # ------------------------------------------------------
+
+        section_patterns = (
+            "what happened in the middle",
+            "what happened in the middle of the story",
+            "what happened in the middle of the session",
+
+            "what happened in the beginning",
+            "what happened at the beginning",
+            "what happened at the start",
+            "what happened in the start",
+
+            "what happened near the end",
+            "what happened at the end",
+
+            "what happened in the first part",
+            "what happened in the second part",
+            "what happened in the final part",
+
+            "what happened earlier",
+            "what happened later",
+
+            "what was discussed in the middle",
+            "what was discussed earlier",
+            "what was discussed later",
+        )
+
+        if any(
+            phrase in text
+            for phrase in section_patterns
+        ):
+
+            return "SECTION_SUMMARY"
+
+        return None
+
+    # ==========================================================
+    # FORCE RETRIEVAL PLAN
+    # ==========================================================
+
+    @staticmethod
+    def _force_retrieval_plan(
+        original_plan: ActionPlan,
+        tool: str,
+        query: str,
+    ) -> ActionPlan:
+        """
+        Replace Gemini's retrieval choice with a deterministic,
+        validated retrieval action.
+
+        Other fields from the original plan are intentionally
+        discarded because retrieval-only requests should have
+        one clear action.
+        """
+
+        return ActionPlan.model_validate(
+            {
+                "actions": [
+                    {
+                        "tool": tool,
+                        "query": query,
+                        "content": "",
+                        "title": "",
+                        "description": "",
+                        "memory_type": "general",
+                        "importance": 0.5,
+                        "confidence": 1.0,
+                        "retention": "SHORT_TERM",
+                        "due_at": "",
+                        "expires_at": "",
+                        "status": "PENDING",
+                        "memory_id": None,
+                        "task_id": None,
+                    }
+                ],
+                "should_speak": True,
+                "response_instruction": (
+                    "Use the retrieved session evidence "
+                    "to answer the user's request."
+                ),
+            }
+        )
 
     # ==========================================================
     # GROUNDED RESPONSE

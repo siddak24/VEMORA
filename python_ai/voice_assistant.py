@@ -652,6 +652,8 @@ def main() -> None:
                     # CHECK ACTIVE CONVERSATION
                     # ------------------------------------------------
 
+                    is_conversation_follow_up = False
+
                     if conversation.is_active():
 
                         conversation_context = (
@@ -708,13 +710,9 @@ def main() -> None:
                                 f"{error}"
                             )
 
-                            is_conversation_follow_up = (
-                                False
-                            )
+                            is_conversation_follow_up = False
 
-                        if (
-                            is_conversation_follow_up
-                        ):
+                        if is_conversation_follow_up:
 
                             print(
                                 "[CONVERSATION] "
@@ -729,106 +727,148 @@ def main() -> None:
                             )
 
                     # ------------------------------------------------
-                    # NORMAL PASSIVE SPEECH
+                    # USER QUESTION / PASSIVE CONTENT CLASSIFICATION
                     # ------------------------------------------------
 
-                    if not is_conversation_follow_up:
-
-                        processor.add_passive_chunk(
-                            user_text
+                    chunk_type = (
+                        session.classify_chunk(
+                            text=user_text
                         )
+                    )
+
+                    print(
+                        "[SESSION] Chunk type: "
+                        f"{chunk_type}"
+                    )
+
+                    # ------------------------------------------------
+                    # CONVERSATION FOLLOW-UP
+                    # ------------------------------------------------
+                    #
+                    # Follow-ups should NOT enter passive-memory
+                    # processing.
+                    # ------------------------------------------------
+
+                    if is_conversation_follow_up:
+
+                        continue
+
+                    # ------------------------------------------------
+                    # USER QUESTION
+                    # ------------------------------------------------
+                    #
+                    # Keep it in the session transcript so the
+                    # conversation/history still exists, but do NOT
+                    # send it to passive AI processing.
+                    # ------------------------------------------------
+
+                    if chunk_type == "USER_QUESTION":
 
                         print(
                             "[SESSION] "
-                            "Passive listening..."
+                            "User question detected."
                         )
 
-                        # ------------------------------------------------
-                        # PASSIVE AI BATCH
-                        # ------------------------------------------------
+                        continue
 
-                        if (
+                    # ------------------------------------------------
+                    # NORMAL PASSIVE SPEECH
+                    # ------------------------------------------------
+
+                    processor.add_passive_chunk(
+                        user_text
+                    )
+
+                    print(
+                        "[SESSION] "
+                        "Passive listening..."
+                    )
+
+                    # ------------------------------------------------
+                    # PASSIVE AI BATCH
+                    # ------------------------------------------------
+
+                    if (
+                        processor
+                        .should_process_passive()
+                    ):
+
+                        passive_batch = (
                             processor
-                            .should_process_passive()
-                        ):
+                            .get_passive_batch()
+                        )
 
-                            passive_batch = (
-                                processor
-                                .get_passive_batch()
+                        if passive_batch:
+
+                            print()
+
+                            print(
+                                "[SESSION] "
+                                "Processing "
+                                "passive batch..."
                             )
 
-                            if passive_batch:
+                            print(
+                                "--------------------------------"
+                            )
+
+                            print(
+                                passive_batch
+                            )
+
+                            try:
+
+                                passive_plan = (
+                                    llm
+                                    .process_passive_batch(
+                                        passive_batch
+                                    )
+                                )
 
                                 print()
 
                                 print(
-                                    "[SESSION] "
-                                    "Processing "
-                                    "passive batch..."
+                                    "[PASSIVE AI PLAN]"
                                 )
 
                                 print(
-                                    "--------------------------------"
+                                    passive_plan
+                                    .model_dump_json(
+                                        indent=2
+                                    )
+                                )
+
+                                passive_results = (
+                                    executor.execute(
+                                        passive_plan,
+                                        allowed_tools={
+                                            "save_memory",
+                                            "update_memory",
+                                            "delete_memory",
+                                            "create_task",
+                                            "complete_task",
+                                        },
+                                    )
+                                )
+
+                                print()
+
+                                print(
+                                    "[PASSIVE ACTION RESULTS]"
                                 )
 
                                 print(
-                                    passive_batch
+                                    passive_results
                                 )
 
-                                try:
+                            except Exception as error:
 
-                                    passive_plan = (
-                                        llm
-                                        .process_passive_batch(
-                                            passive_batch
-                                        )
-                                    )
+                                print(
+                                    "[PASSIVE AI] ERROR: "
+                                    f"{error}"
+                                )
 
-                                    print()
-
-                                    print(
-                                        "[PASSIVE AI PLAN]"
-                                    )
-
-                                    print(
-                                        passive_plan
-                                        .model_dump_json(
-                                            indent=2
-                                        )
-                                    )
-
-                                    passive_results = (
-                                        executor.execute(
-                                            passive_plan,
-                                            allowed_tools={
-                                                "save_memory",
-                                                "update_memory",
-                                                "delete_memory",
-                                                "create_task",
-                                                "complete_task",
-                                            },
-                                        )
-                                    )
-
-                                    print()
-
-                                    print(
-                                        "[PASSIVE ACTION RESULTS]"
-                                    )
-
-                                    print(
-                                        passive_results
-                                    )
-
-                                except Exception as error:
-
-                                    print(
-                                        "[PASSIVE AI] ERROR: "
-                                        f"{error}"
-                                    )
-
-                        continue
-
+                    continue
                 # ==================================================
                 # DIRECT VEMORA / FOLLOW-UP
                 # ==================================================

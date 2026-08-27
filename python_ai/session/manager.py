@@ -159,6 +159,90 @@ class SessionManager:
         return self.session_id
 
     # ==========================================================
+    # CLASSIFY TRANSCRIPT CHUNK
+    # ==========================================================
+
+    @staticmethod
+    def classify_chunk(
+        text: str,
+        chunk_type: str = "PASSIVE",
+    ) -> str:
+        """
+        Classify transcript content before it enters the
+        hierarchical memory system.
+
+        Types:
+            PASSIVE
+            USER_QUESTION
+            DIRECT_COMMAND
+        """
+
+        if chunk_type == "DIRECT_COMMAND":
+            return "DIRECT_COMMAND"
+
+        text = text.strip().lower()
+
+        if not text:
+            return "PASSIVE"
+
+        # ------------------------------------------------------
+        # Obvious question patterns.
+        # ------------------------------------------------------
+
+        question_starters = (
+            "who ",
+            "what ",
+            "when ",
+            "where ",
+            "why ",
+            "how ",
+            "can you ",
+            "could you ",
+            "would you ",
+            "do you ",
+            "did you ",
+            "is ",
+            "are ",
+            "was ",
+            "were ",
+            "will you ",
+            "tell me ",
+            "give me ",
+            "summarize ",
+            "summarise ",
+            "explain ",
+        )
+
+        # ------------------------------------------------------
+        # Conversational follow-up patterns.
+        # ------------------------------------------------------
+
+        follow_up_patterns = (
+            "and who ",
+            "and what ",
+            "and when ",
+            "and where ",
+            "and why ",
+            "and how ",
+            "what about ",
+            "how about ",
+        )
+
+        if any(
+            text.startswith(pattern)
+            for pattern in question_starters
+        ):
+            return "USER_QUESTION"
+
+        if any(
+            text.startswith(pattern)
+            for pattern in follow_up_patterns
+        ):
+            return "USER_QUESTION"
+
+        return "PASSIVE"
+
+    # ==========================================================
     # ADD TRANSCRIPT
     # ==========================================================
 
@@ -185,6 +269,11 @@ class SessionManager:
         if not text:
             return -1
 
+        chunk_type = self.classify_chunk(
+            text=text,
+            chunk_type=chunk_type,
+        )
+                
         self.sequence += 1
 
         # ------------------------------------------------------

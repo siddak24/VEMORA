@@ -198,7 +198,10 @@ class SessionSectionManager:
             chunk
             for chunk in chunks
             if chunk["chunk_type"]
-            != "DIRECT_COMMAND"
+            not in {
+                "DIRECT_COMMAND",
+                "USER_QUESTION",
+            }
         ]
 
     # ==========================================================

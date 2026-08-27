@@ -95,9 +95,10 @@ class ActionExecutor:
                     }
                 )
 
-            # ==================================================
+
+            # ==========================================================
             # GET WHOLE SESSION SUMMARY
-            # ==================================================
+            # ==========================================================
 
             elif action.tool == "get_session_summary":
 
@@ -105,13 +106,77 @@ class ActionExecutor:
                     self.session.get_session_summary()
                 )
 
-                if summary is None:
+                # ------------------------------------------------------
+                # CASE 1:
+                # Final session summary already exists.
+                # ------------------------------------------------------
+
+                if summary is not None:
 
                     results.append(
                         {
                             "tool": "get_session_summary",
-                            "status": "not_found",
-                            "results": [],
+                            "status": "success",
+                            "source": "SESSION_SUMMARY",
+                            "results": [
+                                summary
+                            ],
+                        }
+                    )
+
+                    continue
+
+                # ------------------------------------------------------
+                # CASE 2:
+                # No final session summary yet.
+                #
+                # This happens naturally for a short active session.
+                #
+                # Try section summaries first.
+                # ------------------------------------------------------
+
+                section_summaries = (
+                    self.session.get_section_summaries()
+                )
+
+                if section_summaries:
+
+                    results.append(
+                        {
+                            "tool": "get_session_summary",
+                            "status": "partial",
+                            "source": "SECTION_SUMMARIES",
+                            "results": section_summaries,
+                        }
+                    )
+
+                    continue
+
+                # ------------------------------------------------------
+                # CASE 3:
+                # No session summary and no section summaries.
+                #
+                # This is usually a short session.
+                #
+                # Fall back to the current session transcript.
+                # ------------------------------------------------------
+
+                transcript = (
+                    self.session.full_transcript()
+                )
+
+                if transcript.strip():
+
+                    results.append(
+                        {
+                            "tool": "get_session_summary",
+                            "status": "fallback",
+                            "source": "RAW_SESSION_TRANSCRIPT",
+                            "results": [
+                                {
+                                    "text": transcript
+                                }
+                            ],
                         }
                     )
 
@@ -120,13 +185,11 @@ class ActionExecutor:
                     results.append(
                         {
                             "tool": "get_session_summary",
-                            "status": "success",
-                            "results": [
-                                summary
-                            ],
+                            "status": "not_found",
+                            "source": "NONE",
+                            "results": [],
                         }
                     )
-
             # ==================================================
             # SEARCH SECTION SUMMARIES
             # ==================================================

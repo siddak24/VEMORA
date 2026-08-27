@@ -22,6 +22,8 @@ class Action(BaseModel):
         "delete_task",
         "get_current_time",
         "get_current_date",
+        "get_session_summary",
+        "search_section_summaries",
     ]
 
     # Used by search/update/delete operations.
